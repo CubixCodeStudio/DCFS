@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 2s
+          --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # discordfs-fuse links against libfuse3 on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test (with PostgreSQL)
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: cargo test --workspace
+
+  mount:
+    # The real thing: mount the filesystem and drive it with ordinary tools,
+    # once per cache mode.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        mode: [stream, mirror]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: discordfs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 2s
+          --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config git rsync sqlite3
+      - run: psql "$DATABASE_URL" -f migrations/0001_initial.sql
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/discordfs
+      - run: scripts/fuse-smoke.sh
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/discordfs
+          MODE: ${{ matrix.mode }}
+      # The same mount driven by git, sqlite, tar, rsync and a 50 MB file.
+      - run: scripts/fuse-workload.sh
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/discordfs
+          MODE: ${{ matrix.mode }}
+          REPO: ${{ github.workspace }}
+      # The server disappears mid-copy and comes back.
+      - run: scripts/fuse-outage.sh
+        if: matrix.mode == 'stream'
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/discordfs
+          PROFILE: debug

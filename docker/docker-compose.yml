@@ -1,0 +1,48 @@
+# Development stack: PostgreSQL plus the DiscordFS server.
+#
+# Secrets here are development values in a throwaway database. Do not reuse
+# them anywhere real, and do not add production credentials to this file —
+# pass them through the environment instead.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: discordfs
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../migrations/0001_initial.sql:/docker-entrypoint-initdb.d/0001_initial.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  server:
+    image: rust:slim
+    working_dir: /src
+    command: bash -c "cargo run --release --bin discordfs-server"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:dev@postgres:5432/discordfs
+      OBJECT_STORE_PATH: /data/objects
+      # Development-only values. Generate real ones with `openssl rand -hex 32`.
+      MASTER_KEY: "${MASTER_KEY:?set MASTER_KEY, e.g. export MASTER_KEY=$(openssl rand -hex 32)}"
+      API_TOKEN: "${API_TOKEN:?set API_TOKEN, e.g. export API_TOKEN=$(openssl rand -hex 32)}"
+      SERVER_ADDR: 0.0.0.0:8080
+      RUST_LOG: info
+    ports:
+      - "8080:8080"
+    volumes:
+      - ..:/src
+      - cargo:/usr/local/cargo/registry
+      - objects:/data/objects
+
+volumes:
+  pgdata:
+  cargo:
+  objects:

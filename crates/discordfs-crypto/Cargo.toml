@@ -1,0 +1,16 @@
+[package]
+name = "discordfs-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+discordfs-core = { workspace = true }
+blake3 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+getrandom = "0.2"
+
+[dev-dependencies]

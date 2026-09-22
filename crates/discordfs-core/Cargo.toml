@@ -1,0 +1,23 @@
+[package]
+name = "discordfs-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+uuid = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+tokio = { version = "1", features = ["time"] }
+rand = "0.9"
+tracing = "0.1"
+
+[dev-dependencies]
+criterion = "0.5"
+tokio = { version = "1", features = ["full"] }
+
+[[bench]]
+name = "chunk_planning"
+harness = false
