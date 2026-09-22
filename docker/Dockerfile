@@ -12,22 +12,22 @@ RUN apt-get update \
 
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p discordfs-server -p discordfs-cli
+RUN cargo build --release -p dcfs-server -p dcfs-cli
 
 FROM debian:stable-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --create-home --uid 10001 discordfs
+    && useradd --system --create-home --uid 10001 dcfs
 
-COPY --from=build /src/target/release/discordfs-server /usr/local/bin/
-COPY --from=build /src/target/release/discordfs-cli /usr/local/bin/discordfs
+COPY --from=build /src/target/release/dcfs-server /usr/local/bin/
+COPY --from=build /src/target/release/dcfs-cli /usr/local/bin/dcfs
 
 # Where chunks go when the local object store is in use. A volume in compose,
 # so it survives the container.
-RUN mkdir -p /var/lib/discordfs && chown discordfs:discordfs /var/lib/discordfs
-USER discordfs
-ENV OBJECT_STORE_PATH=/var/lib/discordfs \
+RUN mkdir -p /var/lib/dcfs && chown dcfs:dcfs /var/lib/dcfs
+USER dcfs
+ENV OBJECT_STORE_PATH=/var/lib/dcfs \
     SERVER_ADDR=0.0.0.0:8080
 EXPOSE 8080
 
@@ -37,4 +37,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8080/health || exit 1
 
-ENTRYPOINT ["discordfs-server"]
+ENTRYPOINT ["dcfs-server"]

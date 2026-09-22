@@ -1,4 +1,4 @@
--- DiscordFS: durable object locators
+-- DCFS: durable object locators
 -- Version: 0005
 --
 -- Additive: relaxes three NOT NULLs and adds two nullable columns, so that a

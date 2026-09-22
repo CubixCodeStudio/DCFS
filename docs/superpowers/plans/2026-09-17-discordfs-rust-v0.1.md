@@ -1,4 +1,4 @@
-# DiscordFS Rust v0.1 Implementation Plan
+# DCFS Rust v0.1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust stable (edition 2024 if supported by the installed stable toolchain, otherwise edition 2021), Tokio, Axum, reqwest, SQLx/PostgreSQL, fuser/FUSE3, serde, UUID, BLAKE3, XChaCha20-Poly1305, clap, tracing, Prometheus-compatible metrics.
 
-**Spec:** `docs/superpowers/specs/2026-09-17-discordfs-rust-design.md`
+**Spec:** `docs/superpowers/specs/2026-09-17-dcfs-rust-design.md`
 
 ## Global Constraints
 
@@ -38,7 +38,7 @@ LICENSE-APACHE                    Apache-2.0 license
 README.md                         Build/run/test and architecture quick start
 .env.example                      Non-secret server/client configuration names
 
-crates/discordfs-core/
+crates/dcfs-core/
   Cargo.toml
   src/lib.rs                      Re-exports domain modules
   src/ids.rs                      Strong UUID identifiers
@@ -48,19 +48,19 @@ crates/discordfs-core/
   src/chunk.rs                    ChunkSpec and fixed-size chunk planner
   tests/domain.rs                 Domain/chunk/name invariant tests
 
-crates/discordfs-objectstore/
+crates/dcfs-objectstore/
   Cargo.toml
   src/lib.rs                      ObjectStore trait and errors
   src/memory.rs                   Deterministic in-memory backend for tests
   tests/object_store.rs           Immutability/get/stat/delete contract
 
-crates/discordfs-crypto/
+crates/dcfs-crypto/
   Cargo.toml
   src/lib.rs                      Crypto API
   src/chunk.rs                    XChaCha20-Poly1305 + BLAKE3 envelope
   tests/chunk_crypto.rs           Round-trip/tamper/wrong-key tests
 
-crates/discordfs-protocol/
+crates/dcfs-protocol/
   Cargo.toml
   src/lib.rs                      API version + DTO re-exports
   src/name.rs                     base64url NameBytes wire type
@@ -69,7 +69,7 @@ crates/discordfs-protocol/
   src/errors.rs                   stable API error codes
   tests/json_contract.rs          JSON compatibility tests
 
-crates/discordfs-db/
+crates/dcfs-db/
   Cargo.toml
   src/lib.rs                      Repository traits + PgRepository export
   src/model.rs                    DB-facing records
@@ -80,7 +80,7 @@ crates/discordfs-db/
 migrations/
   0001_initial.sql                nodes, versions, chunks, objects, sessions/jobs
 
-crates/discordfs-server/
+crates/dcfs-server/
   Cargo.toml
   src/lib.rs                      App state/router construction
   src/main.rs                     Server binary
@@ -96,7 +96,7 @@ crates/discordfs-server/
   tests/api_metadata.rs           Router tests with memory repository/store
   tests/api_versions.rs           Atomicity/conflict/upload-failure tests
 
-crates/discordfs-cache/
+crates/dcfs-cache/
   Cargo.toml
   src/lib.rs                      Cache public API
   src/dirty.rs                    Dirty extent merge/range logic
@@ -105,7 +105,7 @@ crates/discordfs-cache/
   src/manager.rs                  Clean-entry LRU and byte budget
   tests/cache.rs                  Dirty safety/eviction/recovery tests
 
-crates/discordfs-fuse/
+crates/dcfs-fuse/
   Cargo.toml
   src/lib.rs                      FUSE adapter exports
   src/main.rs                     Mount binary
@@ -115,7 +115,7 @@ crates/discordfs-fuse/
   src/errno.rs                    API/domain error -> errno mapping
   tests/semantics.rs              Non-mounted operation semantics using fake client
 
-crates/discordfs-discord/
+crates/dcfs-discord/
   Cargo.toml
   src/lib.rs                      DiscordObjectStore
   src/client.rs                   Discord REST primitives
@@ -125,7 +125,7 @@ crates/discordfs-discord/
   tests/ratelimit.rs              deterministic retry/rate-limit tests
   tests/object_store_mock.rs      mocked HTTP attachment lifecycle
 
-crates/discordfs-cli/
+crates/dcfs-cli/
   Cargo.toml
   src/main.rs                     config check, cache recovery, status subcommands
 
@@ -144,8 +144,8 @@ docker/
 ### Task 1: Workspace foundation and core domain model
 
 **Files:**
-- Create: workspace/toolchain/licenses/README plus `crates/discordfs-core/**`
-- Test: `crates/discordfs-core/tests/domain.rs`
+- Create: workspace/toolchain/licenses/README plus `crates/dcfs-core/**`
+- Test: `crates/dcfs-core/tests/domain.rs`
 
 **Interfaces:**
 - Produces `NodeId`, `FileVersionId`, `ObjectId`, `NodeName`, `NodeKind`, `FileAttr`, `VersionState`, `ChunkSpec`, `plan_chunks(size, chunk_size)`.
@@ -167,15 +167,15 @@ fn plans_unaligned_last_chunk() {
 }
 ```
 
-- [ ] **Step 2: Run `cargo test -p discordfs-core` and confirm tests fail** because the types/functions do not exist.
+- [ ] **Step 2: Run `cargo test -p dcfs-core` and confirm tests fail** because the types/functions do not exist.
 - [ ] **Step 3: Implement the minimal strong-ID, name, node, version, and chunk modules** with checked arithmetic and `chunk_size > 0` validation.
-- [ ] **Step 4: Run `cargo fmt --check && cargo test -p discordfs-core && cargo clippy -p discordfs-core --all-targets -- -D warnings` and make them pass.**
+- [ ] **Step 4: Run `cargo fmt --check && cargo test -p dcfs-core && cargo clippy -p dcfs-core --all-targets -- -D warnings` and make them pass.**
 - [ ] **Step 5: Commit** `feat(core): add domain model and chunk planner`.
 
 ### Task 2: Immutable object-store contract and authenticated chunk crypto
 
 **Files:**
-- Create: `crates/discordfs-objectstore/**`, `crates/discordfs-crypto/**`
+- Create: `crates/dcfs-objectstore/**`, `crates/dcfs-crypto/**`
 - Test: contract and crypto tests listed in File Structure.
 
 **Interfaces:**
@@ -193,8 +193,8 @@ fn plans_unaligned_last_chunk() {
 ### Task 3: Versioned protocol contract
 
 **Files:**
-- Create: `crates/discordfs-protocol/**`
-- Test: `crates/discordfs-protocol/tests/json_contract.rs`
+- Create: `crates/dcfs-protocol/**`
+- Test: `crates/dcfs-protocol/tests/json_contract.rs`
 
 **Interfaces:**
 - `NameBytes(Vec<u8>)` serializes to unpadded URL-safe base64.
@@ -211,8 +211,8 @@ fn plans_unaligned_last_chunk() {
 ### Task 4: PostgreSQL schema and repository boundary
 
 **Files:**
-- Create: `migrations/0001_initial.sql`, `crates/discordfs-db/**`
-- Test: `crates/discordfs-db/tests/migration_contract.rs`
+- Create: `migrations/0001_initial.sql`, `crates/dcfs-db/**`
+- Test: `crates/dcfs-db/tests/migration_contract.rs`
 
 **Interfaces:**
 - `MetadataRepository` exposes node lookup/list/create/rename/delete, staged-version creation, chunk attachment, and `commit_version(CommitGuard)`.
@@ -231,7 +231,7 @@ fn plans_unaligned_last_chunk() {
 
 **Files:**
 - Create: server crate/router/config/error/nodes routes and test-only in-memory repository implementation.
-- Test: `crates/discordfs-server/tests/api_metadata.rs`
+- Test: `crates/dcfs-server/tests/api_metadata.rs`
 
 **Interfaces:**
 - Endpoints: resolve/get/children/create/patch/delete/rename plus health/ready.
@@ -248,8 +248,8 @@ fn plans_unaligned_last_chunk() {
 ### Task 6: Immutable version staging and atomic commit service
 
 **Files:**
-- Create/modify: `discordfs-server/src/routes/versions.rs`, `services/commit.rs`, repository memory/Pg methods
-- Test: `crates/discordfs-server/tests/api_versions.rs`
+- Create/modify: `dcfs-server/src/routes/versions.rs`, `services/commit.rs`, repository memory/Pg methods
+- Test: `crates/dcfs-server/tests/api_versions.rs`
 
 **Interfaces:**
 - Stage returns a `FileVersionId` tied to node/base generation.
@@ -267,8 +267,8 @@ fn plans_unaligned_last_chunk() {
 ### Task 7: Local write-back cache, dirty extents, and crash journal
 
 **Files:**
-- Create: `crates/discordfs-cache/**`
-- Test: `crates/discordfs-cache/tests/cache.rs`
+- Create: `crates/dcfs-cache/**`
+- Test: `crates/dcfs-cache/tests/cache.rs`
 
 **Interfaces:**
 - `DirtyExtents::insert(Range<u64>)` merges overlapping/adjacent ranges.
@@ -286,8 +286,8 @@ fn plans_unaligned_last_chunk() {
 ### Task 8: FUSE client semantics and Linux mount
 
 **Files:**
-- Create: `crates/discordfs-fuse/**`, `scripts/fuse-smoke.sh`
-- Test: `crates/discordfs-fuse/tests/semantics.rs`
+- Create: `crates/dcfs-fuse/**`, `scripts/fuse-smoke.sh`
+- Test: `crates/dcfs-fuse/tests/semantics.rs`
 
 **Interfaces:**
 - `ServerClient` trait abstracts protocol operations so semantics tests do not need a mounted kernel filesystem.
@@ -307,7 +307,7 @@ fn plans_unaligned_last_chunk() {
 ### Task 9: Discord ObjectStore with compliant rate limiting
 
 **Files:**
-- Create: `crates/discordfs-discord/**`
+- Create: `crates/dcfs-discord/**`
 - Test: `ratelimit.rs`, `object_store_mock.rs`
 
 **Interfaces:**
@@ -343,7 +343,7 @@ fn plans_unaligned_last_chunk() {
 - [ ] **Step 6: Run `scripts/check.sh`; on an eligible Linux runner run FUSE acceptance suite.**
 - [ ] **Step 7: If explicit Discord test secrets are present, run opt-in smoke test proving upload/read/delete and mocked/real 429-compliant behavior; never make this normal CI.**
 - [ ] **Step 8: Update README with security/compliance limitations and recovery instructions.**
-- [ ] **Step 9: Commit** `feat: complete DiscordFS v0.1 recovery and operations`.
+- [ ] **Step 9: Commit** `feat: complete DCFS v0.1 recovery and operations`.
 
 ---
 

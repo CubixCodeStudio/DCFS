@@ -27,7 +27,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # discordfs-fuse links against libfuse3 on Linux.
+      # dcfs-fuse links against libfuse3 on Linux.
       - run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
 
       - run: cargo fmt --all -- --check
@@ -49,7 +49,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: discordfs
+          POSTGRES_DB: dcfs
         ports:
           - 5432:5432
         options: >-
@@ -62,20 +62,20 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config git rsync sqlite3
       - run: psql "$DATABASE_URL" -f migrations/0001_initial.sql
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/discordfs
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dcfs
       - run: scripts/fuse-smoke.sh
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/discordfs
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dcfs
           MODE: ${{ matrix.mode }}
       # The same mount driven by git, sqlite, tar, rsync and a 50 MB file.
       - run: scripts/fuse-workload.sh
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/discordfs
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dcfs
           MODE: ${{ matrix.mode }}
           REPO: ${{ github.workspace }}
       # The server disappears mid-copy and comes back.
       - run: scripts/fuse-outage.sh
         if: matrix.mode == 'stream'
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/discordfs
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dcfs
           PROFILE: debug

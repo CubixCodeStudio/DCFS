@@ -1,4 +1,4 @@
--- DiscordFS: symbolic links
+-- DCFS: symbolic links
 -- Version: 0002
 --
 -- Additive: adds a nullable column and widens an existing CHECK constraint so

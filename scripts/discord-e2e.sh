@@ -33,12 +33,12 @@ export GC_RETENTION_SECS="${GC_RETENTION_SECS:-1}"
 
 PROFILE="${PROFILE:-release}"
 [ "$PROFILE" = release ] && flag=--release || flag=
-cargo build -q $flag --bin discordfs-server || exit 1
+cargo build -q $flag --bin dcfs-server || exit 1
 bin="${CARGO_TARGET_DIR:-target}/$PROFILE"
 
 work=$(mktemp -d)
 cleanup() {
-    pkill -f "$bin/discordfs-server" 2>/dev/null || true
+    pkill -f "$bin/dcfs-server" 2>/dev/null || true
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -49,7 +49,7 @@ auth=(-H "authorization: Bearer $API_TOKEN")
 api="http://$SERVER_ADDR/api/v1"
 
 start_server() {
-    "$bin/discordfs-server" >> "$work/server.log" 2>&1 &
+    "$bin/dcfs-server" >> "$work/server.log" 2>&1 &
     for _ in $(seq 1 60); do
         curl -sf "http://$SERVER_ADDR/health" >/dev/null && return 0
         sleep 1
@@ -88,7 +88,7 @@ check $? "read back byte for byte"
 
 echo "== restarting the server =="
 # The locators live in PostgreSQL, so the attachments must still be findable.
-pkill -f "$bin/discordfs-server"; sleep 1
+pkill -f "$bin/dcfs-server"; sleep 1
 start_server || exit 1
 curl -s "${auth[@]}" "$api/nodes/$file/data" -o "$work/after.bin"
 [ "$(sha256sum < "$work/after.bin" | cut -d' ' -f1)" = "$want" ]

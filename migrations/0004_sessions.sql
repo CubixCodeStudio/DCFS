@@ -1,4 +1,4 @@
--- DiscordFS: usable sessions, and dropping a table that was never used
+-- DCFS: usable sessions, and dropping a table that was never used
 -- Version: 0004
 --
 -- Additive except for one guarded drop: `upload_jobs` was created by an earlier

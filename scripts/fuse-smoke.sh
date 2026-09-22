@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mount DiscordFS for real and exercise it with ordinary tools.
+# Mount DCFS for real and exercise it with ordinary tools.
 #
 # Linux only: needs /dev/fuse and fuse3. Starts its own server, so set
 # DATABASE_URL to a THROWAWAY database (unset uses the in-memory repository).
@@ -33,11 +33,11 @@ trap cleanup EXIT
 
 PROFILE="${PROFILE:-debug}"
 [ "$PROFILE" = release ] && flag=--release || flag=
-cargo build $flag --bin discordfs-server --bin discordfs-fuse
+cargo build $flag --bin dcfs-server --bin dcfs-fuse
 bin="${CARGO_TARGET_DIR:-target}/$PROFILE"
 
 server_log=$(mktemp)
-"$bin/discordfs-server" > "$server_log" 2>&1 &
+"$bin/dcfs-server" > "$server_log" 2>&1 &
 server_pid=$!
 
 for _ in $(seq 1 60); do
@@ -49,7 +49,7 @@ curl -sf "http://$SERVER_ADDR/health" >/dev/null || { echo "server never became 
 MODE="${MODE:-stream}"
 
 mount_fs() {
-    DISCORDFS_TOKEN="$API_TOKEN" "$bin/discordfs-fuse" "$mnt" \
+    DCFS_TOKEN="$API_TOKEN" "$bin/dcfs-fuse" "$mnt" \
         --server "http://$SERVER_ADDR" --mode "$MODE" &
     for _ in $(seq 1 30); do
         mountpoint -q "$mnt" && return 0
@@ -70,8 +70,8 @@ mkdir "$mnt/docs" "$mnt/docs/nested"
 [[ -d "$mnt/docs/nested" ]]
 check "mkdir, nested directories"
 
-echo "hello discordfs" > "$mnt/docs/hello.txt"
-[[ "$(cat "$mnt/docs/hello.txt")" == "hello discordfs" ]]
+echo "hello dcfs" > "$mnt/docs/hello.txt"
+[[ "$(cat "$mnt/docs/hello.txt")" == "hello dcfs" ]]
 check "write and read back a small file"
 
 ls "$mnt/docs" | grep -q hello.txt
@@ -91,7 +91,7 @@ check "unaligned overwrite matches the same edit on a local file"
 
 mv "$mnt/docs/hello.txt" "$mnt/docs/nested/renamed.txt"
 [[ -f "$mnt/docs/nested/renamed.txt" && ! -f "$mnt/docs/hello.txt" ]]
-[[ "$(cat "$mnt/docs/nested/renamed.txt")" == "hello discordfs" ]]
+[[ "$(cat "$mnt/docs/nested/renamed.txt")" == "hello dcfs" ]]
 check "rename moves the entry and keeps the bytes"
 
 # A remount proves the data is durable in the metadata store, not in a cache.

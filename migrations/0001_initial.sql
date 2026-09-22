@@ -1,11 +1,11 @@
--- DiscordFS Initial Schema
+-- DCFS Initial Schema
 -- Version: 0001
 --
 -- Additive and idempotent: every statement is IF NOT EXISTS, so applying this
 -- to a database that already has the schema is a no-op. It never drops or
 -- alters anything, which is what makes it safe to run against a database that
 -- holds other applications' tables. Objects land in the current search_path,
--- so set DATABASE_SCHEMA to keep DiscordFS out of `public` on a shared server.
+-- so set DATABASE_SCHEMA to keep DCFS out of `public` on a shared server.
 
 -- Nodes table: filesystem tree
 CREATE TABLE IF NOT EXISTS nodes (

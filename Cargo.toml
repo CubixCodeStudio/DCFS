@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/discordfs-core",
-    "crates/discordfs-objectstore",
-    "crates/discordfs-crypto",
-    "crates/discordfs-protocol",
-    "crates/discordfs-db",
-    "crates/discordfs-server",
-    "crates/discordfs-cache",
-    "crates/discordfs-fuse",
-    "crates/discordfs-discord",
-    "crates/discordfs-cli",
+    "crates/dcfs-core",
+    "crates/dcfs-objectstore",
+    "crates/dcfs-crypto",
+    "crates/dcfs-protocol",
+    "crates/dcfs-db",
+    "crates/dcfs-server",
+    "crates/dcfs-cache",
+    "crates/dcfs-fuse",
+    "crates/dcfs-discord",
+    "crates/dcfs-cli",
 ]
 
 [workspace.package]
@@ -21,13 +21,13 @@ rust-version = "1.75"
 
 [workspace.dependencies]
 # Internal crates
-discordfs-core = { path = "crates/discordfs-core" }
-discordfs-objectstore = { path = "crates/discordfs-objectstore" }
-discordfs-crypto = { path = "crates/discordfs-crypto" }
-discordfs-protocol = { path = "crates/discordfs-protocol" }
-discordfs-db = { path = "crates/discordfs-db" }
-discordfs-cache = { path = "crates/discordfs-cache" }
-discordfs-discord = { path = "crates/discordfs-discord" }
+dcfs-core = { path = "crates/dcfs-core" }
+dcfs-objectstore = { path = "crates/dcfs-objectstore" }
+dcfs-crypto = { path = "crates/dcfs-crypto" }
+dcfs-protocol = { path = "crates/dcfs-protocol" }
+dcfs-db = { path = "crates/dcfs-db" }
+dcfs-cache = { path = "crates/dcfs-cache" }
+dcfs-discord = { path = "crates/dcfs-discord" }
 
 # External dependencies
 tokio = { version = "1.36", features = ["full"] }

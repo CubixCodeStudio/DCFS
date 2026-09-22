@@ -16,13 +16,13 @@ export OBJECT_STORE_PATH=$(mktemp -d) GC_RETENTION_SECS=3600
 # encryption and hashing an order of magnitude slower.
 PROFILE="${PROFILE:-debug}"
 [ "$PROFILE" = release ] && flag=--release || flag=
-cargo build -q $flag --bin discordfs-server --bin discordfs-fuse || exit 1
+cargo build -q $flag --bin dcfs-server --bin dcfs-fuse || exit 1
 bin="${CARGO_TARGET_DIR:-target}/$PROFILE"
 
 mnt=$(mktemp -d); work=$(mktemp -d)
-"$bin/discordfs-server" > /tmp/server.log 2>&1 &
+"$bin/dcfs-server" > /tmp/server.log 2>&1 &
 for _ in $(seq 1 60); do curl -sf http://$SERVER_ADDR/health >/dev/null && break; sleep 1; done
-DISCORDFS_TOKEN=$API_TOKEN "$bin/discordfs-fuse" "$mnt" --server http://$SERVER_ADDR --mode "${MODE:-stream}" > /tmp/fuse.log 2>&1 &
+DCFS_TOKEN=$API_TOKEN "$bin/dcfs-fuse" "$mnt" --server http://$SERVER_ADDR --mode "${MODE:-stream}" > /tmp/fuse.log 2>&1 &
 for _ in $(seq 1 30); do mountpoint -q "$mnt" && break; sleep 1; done
 mountpoint -q "$mnt" || { echo "not mounted"; cat /tmp/fuse.log; exit 1; }
 
@@ -91,19 +91,19 @@ rsync -a "$work/withlinks/" "$mnt/rsync-links/" >/dev/null 2>&1 && [ -L "$mnt/rs
 tar -cf "$mnt/src.tar" -C "${REPO:-/src}" crates 2>/dev/null; check $? "tar create onto the mount"
 mkdir -p "$mnt/untar" && tar -xf "$mnt/src.tar" -C "$mnt/untar" 2>/dev/null; check $? "tar extract onto the mount"
 diff -r /src/crates "$mnt/untar/crates" >/dev/null 2>&1; check $? "extracted tree matches the original"
-s=$(t0); rsync -a "${REPO:-/src}"/crates/discordfs-core/ "$mnt/rsync-dest/" >/dev/null 2>&1; e=$(t0)
-diff -r "${REPO:-/src}"/crates/discordfs-core "$mnt/rsync-dest" >/dev/null 2>&1; check $? "rsync a source tree ($(el $s $e))"
+s=$(t0); rsync -a "${REPO:-/src}"/crates/dcfs-core/ "$mnt/rsync-dest/" >/dev/null 2>&1; e=$(t0)
+diff -r "${REPO:-/src}"/crates/dcfs-core "$mnt/rsync-dest" >/dev/null 2>&1; check $? "rsync a source tree ($(el $s $e))"
 
 echo "== 5. git =="
 git config --global user.email t@example.com >/dev/null 2>&1
 git config --global user.name Test >/dev/null 2>&1
 git config --global init.defaultBranch main >/dev/null 2>&1
 (cd "$mnt" && git init -q repo) 2>/dev/null; check $? "git init on the mount"
-(cd "$mnt/repo" && cp -r "${REPO:-/src}"/crates/discordfs-core . && git add -A && git commit -qm first) >/dev/null 2>&1
+(cd "$mnt/repo" && cp -r "${REPO:-/src}"/crates/dcfs-core . && git add -A && git commit -qm first) >/dev/null 2>&1
 check $? "git add + commit"
 (cd "$mnt/repo" && git status --porcelain | head -1 >/dev/null && git log --oneline | head -1 >/dev/null) 2>/dev/null
 check $? "git status + git log"
-(cd "$mnt/repo" && echo change >> discordfs-core/src/lib.rs && git add -A && git commit -qm second && git diff HEAD~1 --stat >/dev/null) 2>/dev/null
+(cd "$mnt/repo" && echo change >> dcfs-core/src/lib.rs && git add -A && git commit -qm second && git diff HEAD~1 --stat >/dev/null) 2>/dev/null
 check $? "git second commit + diff"
 (cd "$mnt/repo" && git fsck --no-progress >/dev/null 2>&1); check $? "git fsck"
 
@@ -130,7 +130,7 @@ echo "== 8. durability across a remount =="
 before=$(find "$mnt" -type f | wc -l)
 sum=$(sha256sum < "$mnt/50m.bin" | cut -d' ' -f1)
 fusermount3 -u "$mnt"
-DISCORDFS_TOKEN=$API_TOKEN "$bin/discordfs-fuse" "$mnt" --server http://$SERVER_ADDR --mode "${MODE:-stream}" >> /tmp/fuse.log 2>&1 &
+DCFS_TOKEN=$API_TOKEN "$bin/dcfs-fuse" "$mnt" --server http://$SERVER_ADDR --mode "${MODE:-stream}" >> /tmp/fuse.log 2>&1 &
 for _ in $(seq 1 30); do mountpoint -q "$mnt" && break; sleep 1; done
 [ "$(find "$mnt" -type f | wc -l)" = "$before" ]; check $? "file count survives a remount ($before files)"
 [ "$(sha256sum < "$mnt/50m.bin" | cut -d' ' -f1)" = "$sum" ]; check $? "50 MB checksum survives a remount"

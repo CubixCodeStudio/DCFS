@@ -1,4 +1,4 @@
--- DiscordFS: index the object back-reference
+-- DCFS: index the object back-reference
 -- Version: 0003
 --
 -- Additive: one index. Garbage collection asks "does any other version still

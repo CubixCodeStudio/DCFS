@@ -1,11 +1,11 @@
-# DiscordFS Rust Design
+# DCFS Rust Design
 
 Date: 2026-09-17
 Status: Proposed v0.1 design, approved in chat pending written-spec review
 
 ## 1. Purpose
 
-DiscordFS is a clean-room Rust implementation of a Linux FUSE filesystem that presents Discord-hosted attachments as a POSIX-like mounted filesystem while keeping authoritative filesystem metadata in PostgreSQL and mutable working state in a local cache.
+DCFS is a clean-room Rust implementation of a Linux FUSE filesystem that presents Discord-hosted attachments as a POSIX-like mounted filesystem while keeping authoritative filesystem metadata in PostgreSQL and mutable working state in a local cache.
 
 The project is not a fork and will not copy source code from DISFS. The initial target is Linux with FUSE3. macOS and additional object-storage backends are explicitly deferred.
 
@@ -43,7 +43,7 @@ The first release will not promise:
 
 Discord's API documentation states that HTTP clients must honor rate limiting and that repeatedly ignoring limits can lead to API-key revocation. Discord's Developer Terms also prohibit excessive or abusive API usage and attempts to exceed usage limits.
 
-Therefore DiscordFS SHALL treat Discord storage as a constrained backend. It SHALL:
+Therefore DCFS SHALL treat Discord storage as a constrained backend. It SHALL:
 
 - obey 429 responses and Retry-After / rate-limit headers;
 - avoid token rotation, bot rotation or channel sharding for the purpose of evading rate limits;
@@ -52,32 +52,32 @@ Therefore DiscordFS SHALL treat Discord storage as a constrained backend. It SHA
 - fail closed rather than bypass Discord limits;
 - keep the storage abstraction replaceable so deployments that need high-throughput object storage can move to S3-compatible storage.
 
-Discord documentation currently reports a default API upload limit of 10 MiB per file, while consumer account limits may differ. Because API limits can change, DiscordFS SHALL NOT bake a fixed Discord maximum into filesystem metadata. The safe initial default chunk payload is 8 MiB, configurable by the server.
+Discord documentation currently reports a default API upload limit of 10 MiB per file, while consumer account limits may differ. Because API limits can change, DCFS SHALL NOT bake a fixed Discord maximum into filesystem metadata. The safe initial default chunk payload is 8 MiB, configurable by the server.
 
 ## 5. Architecture
 
 The system is split into a Rust workspace with independent crates:
 
 ```text
-discordfs-rs/
+dcfs-rs/
 ├── Cargo.toml
 ├── crates/
-│   ├── discordfs-core/
-│   ├── discordfs-protocol/
-│   ├── discordfs-fuse/
-│   ├── discordfs-server/
-│   ├── discordfs-db/
-│   ├── discordfs-objectstore/
-│   ├── discordfs-discord/
-│   ├── discordfs-crypto/
-│   └── discordfs-cli/
+│   ├── dcfs-core/
+│   ├── dcfs-protocol/
+│   ├── dcfs-fuse/
+│   ├── dcfs-server/
+│   ├── dcfs-db/
+│   ├── dcfs-objectstore/
+│   ├── dcfs-discord/
+│   ├── dcfs-crypto/
+│   └── dcfs-cli/
 ├── migrations/
 ├── tests/
 ├── docker/
 └── docs/
 ```
 
-### 5.1 `discordfs-core`
+### 5.1 `dcfs-core`
 
 Owns domain types and invariants only. It has no HTTP, SQL, FUSE or Discord dependencies.
 
@@ -91,13 +91,13 @@ Key concepts:
 - `FileAttr`: portable subset of POSIX attributes.
 - `VersionState`: staging, committed, superseded, garbage.
 
-### 5.2 `discordfs-protocol`
+### 5.2 `dcfs-protocol`
 
 Defines versioned client/server request and response schemas. The transport for v0.1 is HTTP/JSON for metadata/control plus streaming HTTP bodies for chunk transfer. The protocol crate contains DTOs but no server implementation.
 
 Every mutating operation carries an idempotency key. Commit endpoints use an expected-current-version field for optimistic concurrency control.
 
-### 5.3 `discordfs-fuse`
+### 5.3 `dcfs-fuse`
 
 Linux FUSE3 client. Responsibilities:
 
@@ -111,7 +111,7 @@ Linux FUSE3 client. Responsibilities:
 
 The FUSE layer never calls Discord directly.
 
-### 5.4 `discordfs-server`
+### 5.4 `dcfs-server`
 
 Stateless API service except for bounded worker queues. Responsibilities:
 
@@ -124,11 +124,11 @@ Stateless API service except for bounded worker queues. Responsibilities:
 - rate-limit aware background workers;
 - health and metrics endpoints.
 
-### 5.5 `discordfs-db`
+### 5.5 `dcfs-db`
 
 PostgreSQL implementation of metadata repositories and migrations. SQL is isolated behind repository traits used by the server.
 
-### 5.6 `discordfs-objectstore`
+### 5.6 `dcfs-objectstore`
 
 Defines the storage abstraction:
 
@@ -142,7 +142,7 @@ ObjectStore
 
 The interface treats objects as immutable. No overwrite operation exists.
 
-### 5.7 `discordfs-discord`
+### 5.7 `dcfs-discord`
 
 Discord implementation of `ObjectStore`.
 
@@ -156,7 +156,7 @@ It owns:
 
 Database metadata SHALL store guild/channel/message/attachment identifiers as the durable locator, not rely solely on a signed CDN URL because Discord documents attachment CDN URLs as expiring.
 
-### 5.8 `discordfs-crypto`
+### 5.8 `dcfs-crypto`
 
 Provides chunk encryption and integrity operations.
 
@@ -508,7 +508,7 @@ Subject to implementation-plan verification:
 - FUSE: `fuser`/FUSE3 on Linux.
 - Async runtime: Tokio.
 - Server: Axum.
-- HTTP client: reqwest, with Discord-specific rate-limit and retry behavior implemented inside `discordfs-discord` behind the `ObjectStore` trait.
+- HTTP client: reqwest, with Discord-specific rate-limit and retry behavior implemented inside `dcfs-discord` behind the `ObjectStore` trait.
 - PostgreSQL: SQLx.
 - Serialization: serde.
 - Crypto: established RustCrypto-compatible crates for XChaCha20-Poly1305; BLAKE3.
@@ -536,7 +536,7 @@ Each stage must leave the test suite green before proceeding.
 
 ## 23. Acceptance criteria for v0.1
 
-On a Linux test host, after mounting `/mnt/discordfs`, the following must complete correctly against the server:
+On a Linux test host, after mounting `/mnt/dcfs`, the following must complete correctly against the server:
 
 - create nested directories;
 - copy a file larger than one remote chunk;
@@ -563,4 +563,4 @@ Project license: dual MIT OR Apache-2.0.
 - Discord Developer Terms of Service: https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service
 - Discord Developer Policy: https://support-dev.discord.com/hc/en-us/articles/8563934450327-Discord-Developer-Policy
 
-These are runtime/platform constraints, not implementation dependencies. DiscordFS must be revalidated against current Discord documentation before a public release because upload and platform limits may change.
+These are runtime/platform constraints, not implementation dependencies. DCFS must be revalidated against current Discord documentation before a public release because upload and platform limits may change.

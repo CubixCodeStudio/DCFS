@@ -19,7 +19,7 @@ export DATABASE_AUTO_MIGRATE=true
 # PROFILE=release for a realistic copy speed; debug works but takes longer.
 PROFILE="${PROFILE:-release}"
 [ "$PROFILE" = release ] && flag=--release || flag=
-cargo build -q $flag --bin discordfs-server --bin discordfs-fuse || exit 1
+cargo build -q $flag --bin dcfs-server --bin dcfs-fuse || exit 1
 bin="${CARGO_TARGET_DIR:-target}/$PROFILE"
 mnt=$(mktemp -d); work=$(mktemp -d)
 
@@ -27,16 +27,16 @@ mnt=$(mktemp -d); work=$(mktemp -d)
 # enough: leaving one behind holds the port against whatever runs next.
 cleanup() {
     fusermount3 -u "$mnt" 2>/dev/null || true
-    pkill -f "$bin/discordfs-server" 2>/dev/null || true
+    pkill -f "$bin/dcfs-server" 2>/dev/null || true
     rm -rf "$mnt" "$work" "$OBJECT_STORE_PATH"
 }
 trap cleanup EXIT
 
-start_server() { "$bin/discordfs-server" >> /tmp/server.log 2>&1 & echo $!; }
+start_server() { "$bin/dcfs-server" >> /tmp/server.log 2>&1 & echo $!; }
 pid=$(start_server)
 for _ in $(seq 1 60); do curl -sf http://$SERVER_ADDR/health >/dev/null && break; sleep 1; done
 
-RUST_LOG=discordfs_fuse=warn DISCORDFS_TOKEN=$API_TOKEN "$bin/discordfs-fuse" "$mnt" \
+RUST_LOG=dcfs_fuse=warn DCFS_TOKEN=$API_TOKEN "$bin/dcfs-fuse" "$mnt" \
     --server http://$SERVER_ADDR > /tmp/fuse.log 2>&1 &
 for _ in $(seq 1 30); do mountpoint -q "$mnt" && break; sleep 1; done
 mountpoint -q "$mnt" || { echo "not mounted"; cat /tmp/fuse.log; exit 1; }

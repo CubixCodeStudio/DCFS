@@ -1,0 +1,36 @@
+[package]
+name = "dcfs-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dcfs-core.workspace = true
+dcfs-protocol.workspace = true
+dcfs-db.workspace = true
+dcfs-objectstore.workspace = true
+dcfs-crypto.workspace = true
+dcfs-discord = { path = "../dcfs-discord" }
+blake3 = { workspace = true }
+getrandom = "0.2"
+
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+sqlx = { workspace = true }

@@ -1,4 +1,4 @@
-# DiscordFS
+# DCFS
 
 A Linux FUSE filesystem that stores file contents as encrypted chunks and keeps its
 namespace in PostgreSQL. Files are split into chunks, sealed with XChaCha20-Poly1305
@@ -13,8 +13,8 @@ before they leave the server, and made visible through one atomic version commit
 ## Architecture
 
 ```
-  discordfs-fuse  ──HTTP──▶  discordfs-server  ──▶  discordfs-db (PostgreSQL)
-  (mount, buffers)           (chunking, crypto)  └─▶  discordfs-objectstore
+  dcfs-fuse  ──HTTP──▶  dcfs-server  ──▶  dcfs-db (PostgreSQL)
+  (mount, buffers)           (chunking, crypto)  └─▶  dcfs-objectstore
                                                        (local dir today,
                                                         Discord attachments later)
 ```
@@ -25,16 +25,16 @@ database credentials stay on the server.
 
 | Crate | Role |
 |---|---|
-| `discordfs-core` | Domain model: nodes, versions, chunk planning, ids, names, errors. No I/O. |
-| `discordfs-protocol` | Wire types shared by client and server. |
-| `discordfs-server` | Axum HTTP API: namespace, byte I/O, versions, objects, health. |
-| `discordfs-db` | Metadata repository: `PgRepository` (SQLx) plus an in-memory impl for tests. |
-| `discordfs-objectstore` | Immutable object storage: `FsObjectStore` (local dir) and an in-memory impl. |
-| `discordfs-crypto` | Per-chunk XChaCha20-Poly1305 sealing with BLAKE3 hashes. |
-| `discordfs-fuse` | `Fs` service (inode map, write buffering) plus the `fuser` adapter and mount binary. |
-| `discordfs-discord` | Discord API client: upload/download, rate limiting, retries, expiring-URL refresh. |
-| `discordfs-cache` | Dirty extents, LRU accounting and the crash journal the FUSE write log is built on. |
-| `discordfs-cli` | `config-check` and `status` for an operator. |
+| `dcfs-core` | Domain model: nodes, versions, chunk planning, ids, names, errors. No I/O. |
+| `dcfs-protocol` | Wire types shared by client and server. |
+| `dcfs-server` | Axum HTTP API: namespace, byte I/O, versions, objects, health. |
+| `dcfs-db` | Metadata repository: `PgRepository` (SQLx) plus an in-memory impl for tests. |
+| `dcfs-objectstore` | Immutable object storage: `FsObjectStore` (local dir) and an in-memory impl. |
+| `dcfs-crypto` | Per-chunk XChaCha20-Poly1305 sealing with BLAKE3 hashes. |
+| `dcfs-fuse` | `Fs` service (inode map, write buffering) plus the `fuser` adapter and mount binary. |
+| `dcfs-discord` | Discord API client: upload/download, rate limiting, retries, expiring-URL refresh. |
+| `dcfs-cache` | Dirty extents, LRU accounting and the crash journal the FUSE write log is built on. |
+| `dcfs-cli` | `config-check` and `status` for an operator. |
 
 ## Features
 
@@ -86,23 +86,23 @@ brew install postgresql
 ### Build from Source
 
 ```bash
-git clone https://github.com/yourusername/discordfs-rs.git
-cd discordfs-rs
+git clone https://github.com/yourusername/dcfs-rs.git
+cd dcfs-rs
 cargo build --release
 ```
 
 Binaries will be in `target/release/`:
-- `discordfs-server` - HTTP API server
-- `discordfs-fuse` - FUSE client (Linux only)
-- `discordfs-cli` - Operator CLI: `config-check`, `status`, and `put` (upload a
+- `dcfs-server` - HTTP API server
+- `dcfs-fuse` - FUSE client (Linux only)
+- `dcfs-cli` - Operator CLI: `config-check`, `status`, and `put` (upload a
   file, resumable)
 
 ### Install Binaries
 
 ```bash
-sudo cp target/release/discordfs-server /usr/local/bin/
-sudo cp target/release/discordfs-fuse /usr/local/bin/
-sudo cp target/release/discordfs-cli /usr/local/bin/
+sudo cp target/release/dcfs-server /usr/local/bin/
+sudo cp target/release/dcfs-fuse /usr/local/bin/
+sudo cp target/release/dcfs-cli /usr/local/bin/
 ```
 
 ## Quick start
@@ -128,7 +128,7 @@ file unreadable. It is gitignored, which is not the same as backed up.
 ```bash
 . docker/.env
 curl -H "authorization: Bearer $API_TOKEN" localhost:8080/api/v1/fs
-docker compose -f docker/docker-compose.yml exec server discordfs config-check
+docker compose -f docker/docker-compose.yml exec server dcfs config-check
 ```
 
 Stop with `docker compose down`, or `down -v` to throw the data away too.
@@ -138,12 +138,12 @@ Stop with `docker compose down`, or `down -v` to throw the data away too.
 ```bash
 docker compose -f docker/docker-compose.yml up -d postgres
 
-export DATABASE_URL="postgresql://postgres:dev@localhost:55432/discordfs"
+export DATABASE_URL="postgresql://postgres:dev@localhost:55432/dcfs"
 export DATABASE_AUTO_MIGRATE=true
 export OBJECT_STORE_PATH="$PWD/data/objects"
 export MASTER_KEY="$(openssl rand -hex 32)"   # keep this: losing it loses every file
 export API_TOKEN="$(openssl rand -hex 32)"
-cargo run --release --bin discordfs-server
+cargo run --release --bin dcfs-server
 ```
 
 ### Mounting it
@@ -153,12 +153,12 @@ point on the host, so it runs on the host and points at whichever server it
 should talk to. Linux only.
 
 ```bash
-mkdir -p /tmp/discordfs
-DISCORDFS_SERVER=http://localhost:8080 DISCORDFS_TOKEN="$API_TOKEN" \
-  cargo run --release --bin discordfs-fuse -- /tmp/discordfs
+mkdir -p /tmp/dcfs
+DCFS_SERVER=http://localhost:8080 DCFS_TOKEN="$API_TOKEN" \
+  cargo run --release --bin dcfs-fuse -- /tmp/dcfs
 ```
 
-Unmount with `fusermount3 -u /tmp/discordfs`.
+Unmount with `fusermount3 -u /tmp/dcfs`.
 
 ## Deploying
 
@@ -168,7 +168,7 @@ PostgreSQL and in the backend. That is what makes the rest of this simple.
 **What it needs.** PostgreSQL 14+, a `MASTER_KEY` and an `API_TOKEN`, and
 somewhere to put bytes — `OBJECT_STORE_PATH` for a local directory, or
 `DISCORD_WEBHOOK_ID`/`DISCORD_WEBHOOK_TOKEN` (and `DISCORD_WEBHOOKS` for more
-than one). `discordfs-cli config-check` reads the environment the server would
+than one). `dcfs-cli config-check` reads the environment the server would
 read and says what it would do, without starting it or touching the database.
 
 **Secrets come from the environment, never from a file in the repo.** Losing
@@ -181,20 +181,20 @@ an environment:
 
 ```ini
 [Unit]
-Description=DiscordFS server
+Description=DCFS server
 After=network-online.target postgresql.service
 
 [Service]
-ExecStart=/usr/local/bin/discordfs-server
-EnvironmentFile=/etc/discordfs/env      # chmod 600, owned by the service user
-User=discordfs
+ExecStart=/usr/local/bin/dcfs-server
+EnvironmentFile=/etc/dcfs/env      # chmod 600, owned by the service user
+User=dcfs
 Restart=on-failure
 RestartSec=5
 # It needs no filesystem of its own beyond the object store path.
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/discordfs
+ReadWritePaths=/var/lib/dcfs
 
 [Install]
 WantedBy=multi-user.target
@@ -210,10 +210,10 @@ them in order at startup; leave it off and apply `migrations/*.sql` yourself,
 in name order, before the new binary starts. They are additive, so an older
 server keeps running against a newer schema.
 
-**Mounting is Linux-only.** `discordfs-fuse` needs `fuse3` and a user allowed to
+**Mounting is Linux-only.** `dcfs-fuse` needs `fuse3` and a user allowed to
 mount; the server itself builds and runs anywhere. A mount and the server it
-talks to do not have to be on the same machine — point `DISCORDFS_SERVER` at it
-and give the mount `DISCORDFS_TOKEN`.
+talks to do not have to be on the same machine — point `DCFS_SERVER` at it
+and give the mount `DCFS_TOKEN`.
 
 **Back up the database, not just the bytes.** Objects without their metadata are
 unreadable: the manifest is what says which parts make up which file and in what
@@ -224,8 +224,8 @@ order.
 The mount picks how much it keeps locally, the same choice Google Drive offers:
 
 ```bash
-discordfs-fuse /mnt/discordfs --mode stream --cache-size 2147483648   # default
-discordfs-fuse /mnt/discordfs --mode mirror
+dcfs-fuse /mnt/dcfs --mode stream --cache-size 2147483648   # default
+dcfs-fuse /mnt/dcfs --mode mirror
 ```
 
 | | `stream` (default) | `mirror` |
@@ -266,19 +266,19 @@ commit, a log or a screenshot, treat it as leaked and rotate it.
 
 ## Using a database you already have
 
-DiscordFS does not need a database of its own. Point `DATABASE_URL` at an
+DCFS does not need a database of its own. Point `DATABASE_URL` at an
 existing one and give it a schema:
 
 ```bash
 export DATABASE_URL="postgresql://user:pass@db.internal/appdb"
-export DATABASE_SCHEMA=discordfs     # default is public
+export DATABASE_SCHEMA=dcfs     # default is public
 export DATABASE_AUTO_MIGRATE=true    # or apply the SQL yourself, see below
 ```
 
 What that does and does not do:
 
 - It **never creates a database**, and never touches one you do not name.
-- Every connection is pinned to `DATABASE_SCHEMA`, so the six DiscordFS tables
+- Every connection is pinned to `DATABASE_SCHEMA`, so the six DCFS tables
   (`nodes`, `file_versions`, `file_chunks`, `stored_objects`, `sessions`)
   cannot collide with tables another application owns.
 - `migrations/0001_initial.sql` is **additive and idempotent**: every statement
@@ -292,12 +292,12 @@ What that does and does not do:
 To install the schema yourself instead:
 
 ```bash
-psql "$DATABASE_URL" -c "CREATE SCHEMA IF NOT EXISTS discordfs"
-psql "$DATABASE_URL" -c "SET search_path TO discordfs" -f migrations/0001_initial.sql
+psql "$DATABASE_URL" -c "CREATE SCHEMA IF NOT EXISTS dcfs"
+psql "$DATABASE_URL" -c "SET search_path TO dcfs" -f migrations/0001_initial.sql
 ```
 
-**Rollback** is dropping those tables, and the schema if DiscordFS created
-it. Nothing outside them is modified. Give DiscordFS a role scoped to its own
+**Rollback** is dropping those tables, and the schema if DCFS created
+it. Nothing outside them is modified. Give DCFS a role scoped to its own
 schema so that stays true by construction.
 
 ## API
@@ -339,18 +339,18 @@ races only appear once the code is fast enough to hit them.
 ### Project Structure
 
 ```
-discordfs-rs/
+dcfs-rs/
 ├── crates/
-│   ├── discordfs-core/          # Domain types, chunk planning, errors, retry logic
-│   ├── discordfs-protocol/      # Wire types (JSON DTOs, base64url names)
-│   ├── discordfs-server/        # Axum HTTP API server
-│   ├── discordfs-db/            # PostgreSQL repository + in-memory impl
-│   ├── discordfs-objectstore/   # Immutable object storage trait + implementations
-│   ├── discordfs-crypto/        # XChaCha20-Poly1305 encryption with BLAKE3
-│   ├── discordfs-fuse/          # FUSE filesystem client
-│   ├── discordfs-discord/       # Discord API client (webhook attachments)
-│   ├── discordfs-cache/         # Write-back cache with crash journal
-│   └── discordfs-cli/           # Operator CLI: config-check, status
+│   ├── dcfs-core/          # Domain types, chunk planning, errors, retry logic
+│   ├── dcfs-protocol/      # Wire types (JSON DTOs, base64url names)
+│   ├── dcfs-server/        # Axum HTTP API server
+│   ├── dcfs-db/            # PostgreSQL repository + in-memory impl
+│   ├── dcfs-objectstore/   # Immutable object storage trait + implementations
+│   ├── dcfs-crypto/        # XChaCha20-Poly1305 encryption with BLAKE3
+│   ├── dcfs-fuse/          # FUSE filesystem client
+│   ├── dcfs-discord/       # Discord API client (webhook attachments)
+│   ├── dcfs-cache/         # Write-back cache with crash journal
+│   └── dcfs-cli/           # Operator CLI: config-check, status
 ├── migrations/                  # SQL migrations (idempotent, additive)
 ├── scripts/                     # Smoke tests, workload scripts
 └── docs/                        # Design docs and specifications
@@ -363,15 +363,15 @@ discordfs-rs/
 cargo test --workspace
 
 # Run tests for a specific crate
-cargo test -p discordfs-core
-cargo test -p discordfs-server
+cargo test -p dcfs-core
+cargo test -p dcfs-server
 
 # Run integration tests
 cargo test --test integration
 cargo test --test e2e
 
 # Run benchmarks
-cargo bench -p discordfs-core
+cargo bench -p dcfs-core
 
 # Run PostgreSQL tests (requires running database)
 TEST_DATABASE_URL=postgresql://postgres:***@localhost:55432/postgres cargo test --workspace
@@ -395,27 +395,27 @@ scripts/check.sh
 
 ### Adding New Features
 
-1. **Domain types** → `discordfs-core` (no I/O, pure Rust)
-2. **Wire format** → `discordfs-protocol` (JSON serialization)
-3. **Database** → `discordfs-db` (repository trait + SQLx implementation)
-4. **Server endpoints** → `discordfs-server` (Axum handlers)
-5. **Client operations** → `discordfs-fuse` (FUSE operations)
+1. **Domain types** → `dcfs-core` (no I/O, pure Rust)
+2. **Wire format** → `dcfs-protocol` (JSON serialization)
+3. **Database** → `dcfs-db` (repository trait + SQLx implementation)
+4. **Server endpoints** → `dcfs-server` (Axum handlers)
+5. **Client operations** → `dcfs-fuse` (FUSE operations)
 6. **Tests** → Add unit tests in `src/` and integration tests in `tests/`
 
 ### Debugging
 
 ```bash
 # Enable debug logging
-RUST_LOG=debug cargo run --bin discordfs-server
+RUST_LOG=debug cargo run --bin dcfs-server
 
 # Enable FUSE debug mode
-discordfs-fuse /mnt/discordfs -d
+dcfs-fuse /mnt/dcfs -d
 
 # View server logs with timestamps
-RUST_LOG=discordfs=debug,tower_http=debug cargo run --bin discordfs-server
+RUST_LOG=dcfs=debug,tower_http=debug cargo run --bin dcfs-server
 
 # Check database state
-psql "$DATABASE_URL" -c "SELECT * FROM discordfs.nodes LIMIT 10"
+psql "$DATABASE_URL" -c "SELECT * FROM dcfs.nodes LIMIT 10"
 ```
 
 ### Performance Profiling
@@ -425,11 +425,11 @@ psql "$DATABASE_URL" -c "SELECT * FROM discordfs.nodes LIMIT 10"
 cargo bench
 
 # Profile with perf (Linux)
-perf record -g cargo run --release --bin discordfs-server
+perf record -g cargo run --release --bin dcfs-server
 perf report
 
 # Generate flamegraph
-cargo flamegraph --bin discordfs-server
+cargo flamegraph --bin dcfs-server
 ```
 
 ### Test layout
@@ -437,26 +437,26 @@ cargo flamegraph --bin discordfs-server
 | Suite | What it covers |
 |---|---|
 | unit tests in `crates/*/src/**` | Domain invariants, chunk planning, crypto, cache state, rate limiting, config redaction, constant-time token comparison |
-| `discordfs-core/tests/domain.rs` | Name, chunk and version-state invariants |
-| `discordfs-protocol/tests/json_contract.rs` | Wire format, including non-UTF-8 names |
-| `discordfs-db/tests/migration_contract.rs` | The migration keeps its required tables, constraints and indexes |
-| `discordfs-server/tests/api_metadata.rs` | Namespace API, including `rmdir` semantics |
-| `discordfs-server/tests/api_data.rs` | Byte I/O: chunk boundaries, unaligned overwrites, holes, chunk reuse, one version per write |
-| `discordfs-server/tests/api_segment_read.rs` | A small read fetches one segment, not the whole part |
+| `dcfs-core/tests/domain.rs` | Name, chunk and version-state invariants |
+| `dcfs-protocol/tests/json_contract.rs` | Wire format, including non-UTF-8 names |
+| `dcfs-db/tests/migration_contract.rs` | The migration keeps its required tables, constraints and indexes |
+| `dcfs-server/tests/api_metadata.rs` | Namespace API, including `rmdir` semantics |
+| `dcfs-server/tests/api_data.rs` | Byte I/O: chunk boundaries, unaligned overwrites, holes, chunk reuse, one version per write |
+| `dcfs-server/tests/api_segment_read.rs` | A small read fetches one segment, not the whole part |
 | `scripts/fuse-scale.sh` | How write cost grows with file size, through a real mount |
-| `discordfs-server/tests/api_versions.rs` | Staging, manifests, atomic commit, conflict handling, encryption at rest |
-| `discordfs-server/tests/api_auth.rs` | Every API route is behind the bearer token |
-| `discordfs-server/tests/api_gc.rs` | Deletion and overwrite collect bytes; shared and live objects survive |
-| `discordfs-server/tests/api_partial_read.rs` | A range read fetches only the parts it covers |
-| `discordfs-fuse/tests/service.rs` | Filesystem semantics, write buffering and crash recovery, with no kernel involved |
-| `discordfs-fuse/tests/reconnect.rs` | Riding out a server that is briefly unavailable, and the replay rules that make it safe |
-| `discordfs-db/tests/postgres_repository.rs` | `PgRepository` against real PostgreSQL |
-| `discordfs-server/tests/e2e_postgres.rs` | The real router over real PostgreSQL, end to end |
-| `discordfs-fuse` unit tests | Block cache: fetch-once, block stitching, LRU eviction, version invalidation |
+| `dcfs-server/tests/api_versions.rs` | Staging, manifests, atomic commit, conflict handling, encryption at rest |
+| `dcfs-server/tests/api_auth.rs` | Every API route is behind the bearer token |
+| `dcfs-server/tests/api_gc.rs` | Deletion and overwrite collect bytes; shared and live objects survive |
+| `dcfs-server/tests/api_partial_read.rs` | A range read fetches only the parts it covers |
+| `dcfs-fuse/tests/service.rs` | Filesystem semantics, write buffering and crash recovery, with no kernel involved |
+| `dcfs-fuse/tests/reconnect.rs` | Riding out a server that is briefly unavailable, and the replay rules that make it safe |
+| `dcfs-db/tests/postgres_repository.rs` | `PgRepository` against real PostgreSQL |
+| `dcfs-server/tests/e2e_postgres.rs` | The real router over real PostgreSQL, end to end |
+| `dcfs-fuse` unit tests | Block cache: fetch-once, block stitching, LRU eviction, version invalidation |
 | `scripts/fuse-smoke.sh` | A real mount driven by `cp`, `dd`, `mv`, `rm`, with checksums. `MODE=mirror` runs the same suite mirrored |
 | `scripts/fuse-workload.sh` | A real mount driven by git, sqlite, tar, rsync, symlinks, a 50 MB file and 8 concurrent writers |
 | `scripts/fuse-outage.sh` | The server killed and restarted in the middle of a 30 MB copy |
-| `discordfs-discord/tests/live_discord.rs` | The object-store contract against **real Discord** |
+| `dcfs-discord/tests/live_discord.rs` | The object-store contract against **real Discord** |
 | `scripts/discord-e2e.sh` | A server backed by **real Discord**: write, restart, read, partial read, delete |
 
 The PostgreSQL suites are skipped unless `TEST_DATABASE_URL` points at a **throwaway**
@@ -482,7 +482,7 @@ becomes one immutable, separately encrypted object. Three consequences:
 **Reads fetch only the parts they cover.** Reading ten bytes from the middle of a large
 file fetches one part, not the file; a read straddling a boundary fetches two. Editing
 one part re-encrypts and re-uploads that part alone and carries the rest over by
-reference. `crates/discordfs-server/tests/api_partial_read.rs` counts the backend fetches
+reference. `crates/dcfs-server/tests/api_partial_read.rs` counts the backend fetches
 to hold this.
 
 **Deleting a file deletes its bytes.** `rm` unlinks immediately, and a background sweep
@@ -626,7 +626,7 @@ number.
 export MASTER_KEY="$(openssl rand -hex 32)"
 export API_TOKEN="$(openssl rand -hex 32)"
 export OBJECT_STORE_PATH="$PWD/data/objects"
-export DATABASE_URL="postgresql://postgres:***@localhost:55432/discordfs"
+export DATABASE_URL="postgresql://postgres:***@localhost:55432/dcfs"
 ```
 
 **Database connection failed:**
@@ -638,7 +638,7 @@ pg_isready -h localhost -p 5432
 psql "$DATABASE_URL" -c "SELECT 1"
 
 # Check if schema exists
-psql "$DATABASE_URL" -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'discordfs'"
+psql "$DATABASE_URL" -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'dcfs'"
 ```
 
 **Port already in use:**
@@ -666,9 +666,9 @@ sudo usermod -aG fuse $USER
 **Mount point not empty:**
 ```bash
 # FUSE requires an empty mount point
-mkdir -p /tmp/discordfs
+mkdir -p /tmp/dcfs
 # or
-rm -rf /tmp/discordfs/*
+rm -rf /tmp/dcfs/*
 ```
 
 **Module not loaded (Linux):**
@@ -698,10 +698,10 @@ sudo modprobe fuse
 **Checksum mismatch:**
 ```bash
 # Verify file integrity
-sha256sum /mnt/discordfs/path/to/file
+sha256sum /mnt/dcfs/path/to/file
 
 # Check server logs for encryption errors
-journalctl -u discordfs-server | grep -i "checksum\|decrypt"
+journalctl -u dcfs-server | grep -i "checksum\|decrypt"
 ```
 
 **Missing files after restart:**
@@ -714,7 +714,7 @@ journalctl -u discordfs-server | grep -i "checksum\|decrypt"
 **Schema migration failed:**
 ```bash
 # Check current schema version
-psql "$DATABASE_URL" -c "SELECT version FROM discordfs.schema_migrations"
+psql "$DATABASE_URL" -c "SELECT version FROM dcfs.schema_migrations"
 
 # Manual migration (if needed)
 psql "$DATABASE_URL" -f migrations/0001_initial.sql
@@ -726,7 +726,7 @@ psql "$DATABASE_URL" -f migrations/0001_initial.sql
 export DATABASE_POOL_SIZE=20
 
 # Check active connections
-psql "$DATABASE_URL" -c "SELECT count(*) FROM pg_stat_activity WHERE datname = 'discordfs'"
+psql "$DATABASE_URL" -c "SELECT count(*) FROM pg_stat_activity WHERE datname = 'dcfs'"
 ```
 
 ### Object store issues
@@ -754,7 +754,7 @@ sudo chown -R $USER:$USER "$OBJECT_STORE_PATH"
 1. Check logs: `RUST_LOG=debug` for verbose output
 2. Run smoke tests: `scripts/fuse-smoke.sh`
 3. Run workload tests: `scripts/fuse-workload.sh`
-4. Open an issue: https://github.com/yourusername/discordfs-rs/issues
+4. Open an issue: https://github.com/yourusername/dcfs-rs/issues
 
 ## Testing against real Discord
 
@@ -774,7 +774,7 @@ printf 'DISCORD_WEBHOOK_ID=...\nDISCORD_WEBHOOK_TOKEN=...\n' > .env.discord-test
 chmod 600 .env.discord-test
 set -a; . ./.env.discord-test; set +a
 
-cargo test -p discordfs-discord --test live_discord -- --test-threads=1
+cargo test -p dcfs-discord --test live_discord -- --test-threads=1
 DATABASE_URL=postgresql://... scripts/discord-e2e.sh
 ```
 

@@ -1,4 +1,4 @@
-# DiscordFS: PostgreSQL and the server, ready to run.
+# DCFS: PostgreSQL and the server, ready to run.
 #
 #   cd docker
 #   { echo "MASTER_KEY=$(openssl rand -hex 32)"
@@ -19,7 +19,7 @@ services:
     image: postgres:16
     environment:
       POSTGRES_PASSWORD: dev
-      POSTGRES_DB: discordfs
+      POSTGRES_DB: dcfs
     ports:
       - "55432:5432"
     volumes:
@@ -29,7 +29,7 @@ services:
       # record which attachment holds an object.
       - ../migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d discordfs"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dcfs"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -42,7 +42,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:dev@postgres:5432/discordfs
+      DATABASE_URL: postgresql://postgres:dev@postgres:5432/dcfs
       # initdb only runs against an empty data directory, so this is what keeps
       # an existing volume up to date after an upgrade.
       DATABASE_AUTO_MIGRATE: "true"
@@ -57,7 +57,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - objects:/var/lib/discordfs
+      - objects:/var/lib/dcfs
     restart: unless-stopped
 
 volumes:
