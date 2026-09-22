@@ -13,7 +13,10 @@ services:
       - "55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ../migrations/0001_initial.sql:/docker-entrypoint-initdb.d/0001_initial.sql:ro
+      # Every migration, not just the first: initdb runs them in name order,
+      # and a database with only 0001 has no sessions table and no place to
+      # record where an attachment went.
+      - ../migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
@@ -29,6 +32,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:dev@postgres:5432/discordfs
+      # initdb only runs against an empty data directory, so this is what keeps
+      # an existing volume up to date.
+      DATABASE_AUTO_MIGRATE: "true"
       OBJECT_STORE_PATH: /data/objects
       # Development-only values. Generate real ones with `openssl rand -hex 32`.
       MASTER_KEY: "${MASTER_KEY:?set MASTER_KEY, e.g. export MASTER_KEY=$(openssl rand -hex 32)}"

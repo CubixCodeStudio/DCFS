@@ -94,7 +94,8 @@ cargo build --release
 Binaries will be in `target/release/`:
 - `discordfs-server` - HTTP API server
 - `discordfs-fuse` - FUSE client (Linux only)
-- `discordfs-cli` - Operator CLI: `config-check` and `status`
+- `discordfs-cli` - Operator CLI: `config-check`, `status`, and `put` (upload a
+  file, resumable)
 
 ### Install Binaries
 
@@ -108,9 +109,11 @@ sudo cp target/release/discordfs-cli /usr/local/bin/
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d postgres
-psql "postgresql://postgres:dev@localhost:55432/discordfs" -f migrations/0001_initial.sql
 
 export DATABASE_URL="postgresql://postgres:dev@localhost:55432/discordfs"
+# Applies every migration in order. Without it the database has to be brought
+# up to date by hand: `for f in migrations/*.sql; do psql "$DATABASE_URL" -f "$f"; done`
+export DATABASE_AUTO_MIGRATE=true
 export OBJECT_STORE_PATH="$PWD/data/objects"
 export MASTER_KEY="$(openssl rand -hex 32)"   # keep this: losing it loses every file
 export API_TOKEN="$(openssl rand -hex 32)"
@@ -125,6 +128,65 @@ DISCORDFS_TOKEN="$API_TOKEN" cargo run --release --bin discordfs-fuse -- /tmp/di
 ```
 
 Unmount with `fusermount3 -u /tmp/discordfs`.
+
+## Deploying
+
+The server is one binary with no state of its own: everything durable is in
+PostgreSQL and in the backend. That is what makes the rest of this simple.
+
+**What it needs.** PostgreSQL 14+, a `MASTER_KEY` and an `API_TOKEN`, and
+somewhere to put bytes — `OBJECT_STORE_PATH` for a local directory, or
+`DISCORD_WEBHOOK_ID`/`DISCORD_WEBHOOK_TOKEN` (and `DISCORD_WEBHOOKS` for more
+than one). `discordfs-cli config-check` reads the environment the server would
+read and says what it would do, without starting it or touching the database.
+
+**Secrets come from the environment, never from a file in the repo.** Losing
+`MASTER_KEY` loses every file: there is no key rotation in v0.1 and no way to
+read a chunk without it. Back it up somewhere that is not the same disk as the
+database.
+
+**Run it under systemd**, or anything that keeps a process alive and passes it
+an environment:
+
+```ini
+[Unit]
+Description=DiscordFS server
+After=network-online.target postgresql.service
+
+[Service]
+ExecStart=/usr/local/bin/discordfs-server
+EnvironmentFile=/etc/discordfs/env      # chmod 600, owned by the service user
+User=discordfs
+Restart=on-failure
+RestartSec=5
+# It needs no filesystem of its own beyond the object store path.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/discordfs
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**More than one instance** can share a database; see the section above on what
+holds across them. Size `DB_MAX_CONNECTIONS` above the number of writers you
+expect to overlap: a writer holds a pooled connection for the length of its
+write, uploads included, which over Discord is seconds per part.
+
+**Migrations are opt-in.** `DATABASE_AUTO_MIGRATE=true` applies every one of
+them in order at startup; leave it off and apply `migrations/*.sql` yourself,
+in name order, before the new binary starts. They are additive, so an older
+server keeps running against a newer schema.
+
+**Mounting is Linux-only.** `discordfs-fuse` needs `fuse3` and a user allowed to
+mount; the server itself builds and runs anywhere. A mount and the server it
+talks to do not have to be on the same machine — point `DISCORDFS_SERVER` at it
+and give the mount `DISCORDFS_TOKEN`.
+
+**Back up the database, not just the bytes.** Objects without their metadata are
+unreadable: the manifest is what says which parts make up which file and in what
+order.
 
 ## Modes: stream and mirror
 
