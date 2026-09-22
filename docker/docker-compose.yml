@@ -1,8 +1,19 @@
-# Development stack: PostgreSQL plus the DiscordFS server.
+# DiscordFS: PostgreSQL and the server, ready to run.
 #
-# Secrets here are development values in a throwaway database. Do not reuse
-# them anywhere real, and do not add production credentials to this file —
-# pass them through the environment instead.
+#   cd docker
+#   { echo "MASTER_KEY=$(openssl rand -hex 32)"
+#     echo "API_TOKEN=$(openssl rand -hex 32)"; } > .env
+#   docker compose up
+#
+# Keep that .env. MASTER_KEY is the only thing that can decrypt what has been
+# written, and v0.1 has no key rotation: a new one makes every existing file
+# unreadable. It is gitignored, which is not the same as backed up.
+#
+# Chunks go to a local volume by default, so this runs without Discord
+# credentials. Fill in the webhook lines in .env to use Discord instead.
+#
+# Mounting is not here: the FUSE client needs /dev/fuse and a mount point on
+# the host, so it belongs on the host, pointed at the server this starts.
 services:
   postgres:
     image: postgres:16
@@ -14,41 +25,41 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Every migration, not just the first: initdb runs them in name order,
-      # and a database with only 0001 has no sessions table and no place to
-      # record where an attachment went.
+      # and a database with only 0001 has no sessions table and nowhere to
+      # record which attachment holds an object.
       - ../migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d discordfs"]
       interval: 2s
       timeout: 3s
       retries: 30
 
   server:
-    image: rust:slim
-    working_dir: /src
-    command: bash -c "cargo run --release --bin discordfs-server"
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:dev@postgres:5432/discordfs
       # initdb only runs against an empty data directory, so this is what keeps
-      # an existing volume up to date.
+      # an existing volume up to date after an upgrade.
       DATABASE_AUTO_MIGRATE: "true"
-      OBJECT_STORE_PATH: /data/objects
-      # Development-only values. Generate real ones with `openssl rand -hex 32`.
-      MASTER_KEY: "${MASTER_KEY:?set MASTER_KEY, e.g. export MASTER_KEY=$(openssl rand -hex 32)}"
-      API_TOKEN: "${API_TOKEN:?set API_TOKEN, e.g. export API_TOKEN=$(openssl rand -hex 32)}"
-      SERVER_ADDR: 0.0.0.0:8080
-      RUST_LOG: info
+      # Secrets come from .env beside this file, never from here.
+      MASTER_KEY: ${MASTER_KEY:?run the two openssl lines at the top of this file}
+      API_TOKEN: ${API_TOKEN:?run the two openssl lines at the top of this file}
+      # Set these in .env to store chunks on Discord instead of the volume.
+      DISCORD_WEBHOOK_ID: ${DISCORD_WEBHOOK_ID:-}
+      DISCORD_WEBHOOK_TOKEN: ${DISCORD_WEBHOOK_TOKEN:-}
+      DISCORD_WEBHOOKS: ${DISCORD_WEBHOOKS:-}
+      RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "8080:8080"
     volumes:
-      - ..:/src
-      - cargo:/usr/local/cargo/registry
-      - objects:/data/objects
+      - objects:/var/lib/discordfs
+    restart: unless-stopped
 
 volumes:
   pgdata:
-  cargo:
   objects:

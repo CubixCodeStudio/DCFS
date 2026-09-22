@@ -1,0 +1,7 @@
+# The build context is sent to the daemon in full, and target/ is gigabytes.
+target/
+.git/
+.env
+.env.*
+!.env.example
+data/

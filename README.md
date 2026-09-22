@@ -107,12 +107,38 @@ sudo cp target/release/discordfs-cli /usr/local/bin/
 
 ## Quick start
 
+Two commands, and nothing to install but Docker:
+
+```bash
+cd docker
+{ echo "MASTER_KEY=$(openssl rand -hex 32)"
+  echo "API_TOKEN=$(openssl rand -hex 32)"; } > .env
+docker compose up
+```
+
+That builds the server, starts PostgreSQL, applies every migration, and serves
+on `http://localhost:8080`. Chunks go to a Docker volume, so it runs without
+Discord credentials; fill in the webhook lines in `docker/.env` to store them as
+attachments instead.
+
+**Keep that `.env`.** `MASTER_KEY` is the only thing that can decrypt what has
+been written and v0.1 has no key rotation, so a new one makes every existing
+file unreadable. It is gitignored, which is not the same as backed up.
+
+```bash
+. docker/.env
+curl -H "authorization: Bearer $API_TOKEN" localhost:8080/api/v1/fs
+docker compose -f docker/docker-compose.yml exec server discordfs config-check
+```
+
+Stop with `docker compose down`, or `down -v` to throw the data away too.
+
+### Without Docker
+
 ```bash
 docker compose -f docker/docker-compose.yml up -d postgres
 
 export DATABASE_URL="postgresql://postgres:dev@localhost:55432/discordfs"
-# Applies every migration in order. Without it the database has to be brought
-# up to date by hand: `for f in migrations/*.sql; do psql "$DATABASE_URL" -f "$f"; done`
 export DATABASE_AUTO_MIGRATE=true
 export OBJECT_STORE_PATH="$PWD/data/objects"
 export MASTER_KEY="$(openssl rand -hex 32)"   # keep this: losing it loses every file
@@ -120,11 +146,16 @@ export API_TOKEN="$(openssl rand -hex 32)"
 cargo run --release --bin discordfs-server
 ```
 
-Then, on Linux, in another shell:
+### Mounting it
+
+The FUSE client is not in the compose stack: it needs `/dev/fuse` and a mount
+point on the host, so it runs on the host and points at whichever server it
+should talk to. Linux only.
 
 ```bash
 mkdir -p /tmp/discordfs
-DISCORDFS_TOKEN="$API_TOKEN" cargo run --release --bin discordfs-fuse -- /tmp/discordfs
+DISCORDFS_SERVER=http://localhost:8080 DISCORDFS_TOKEN="$API_TOKEN" \
+  cargo run --release --bin discordfs-fuse -- /tmp/discordfs
 ```
 
 Unmount with `fusermount3 -u /tmp/discordfs`.
