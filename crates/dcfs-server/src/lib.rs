@@ -77,7 +77,17 @@ pub fn build_router(state: AppState) -> Router {
             auth::require_token,
         ));
 
+    // The browser UI and signing into it: no token needed to ask for the page
+    // or to present one, and everything it then calls is behind the same auth
+    // as any other client.
+    let ui = Router::new()
+        .route("/ui", get(handlers::ui::page))
+        .route("/ui/login", post(handlers::ui::login))
+        .route("/ui/logout", post(handlers::ui::logout))
+        .with_state(state.clone());
+
     Router::new()
+        .merge(ui)
         .merge(dav)
         .route("/health", get(handlers::health::health_check))
         .route("/health/ready", get(handlers::health::readiness_check))

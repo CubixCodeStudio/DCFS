@@ -34,6 +34,17 @@ pub fn presented_token_for_test(header_value: &str) -> Option<String> {
     presented_token(header_value)
 }
 
+/// The name of the cookie the browser UI signs in with.
+pub const SESSION_COOKIE: &str = "dcfs_session";
+
+/// Pick the session cookie out of a Cookie header.
+pub fn session_cookie(header_value: &str) -> Option<String> {
+    header_value.split(';').find_map(|pair| {
+        let (name, value) = pair.trim().split_once('=')?;
+        (name == SESSION_COOKIE).then(|| value.to_string())
+    })
+}
+
 fn presented_token(header_value: &str) -> Option<String> {
     if let Some(token) = header_value.strip_prefix("Bearer ") {
         return Some(token.to_string());
@@ -79,6 +90,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     different == 0
 }
 
+/// Whether a presented secret is the configured token.
+pub fn token_matches(presented: &str, expected: &str) -> bool {
+    constant_time_eq(presented.as_bytes(), expected.as_bytes())
+}
+
 /// Reject any request that does not carry the configured bearer token.
 ///
 /// Health endpoints are mounted outside this layer so orchestrators can probe
@@ -94,12 +110,20 @@ pub async fn require_token(
         return next.run(request).await;
     };
 
-    let header_value = request
-        .headers()
+    let headers = request.headers();
+    let presented = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    let presented = presented_token(header_value);
+        .and_then(presented_token)
+        .or_else(|| {
+            // The browser UI holds its credential in an HttpOnly cookie, so no
+            // script on the page can read it and nothing is kept in browser
+            // storage.
+            headers
+                .get(header::COOKIE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(session_cookie)
+        });
     let presented = presented.as_deref().unwrap_or("");
 
     if constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
@@ -135,12 +159,20 @@ pub async fn require_bootstrap_token(
     let Some(expected) = state.api_token.as_ref() else {
         return next.run(request).await;
     };
-    let header_value = request
-        .headers()
+    let headers = request.headers();
+    let presented = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    let presented = presented_token(header_value);
+        .and_then(presented_token)
+        .or_else(|| {
+            // The browser UI holds its credential in an HttpOnly cookie, so no
+            // script on the page can read it and nothing is kept in browser
+            // storage.
+            headers
+                .get(header::COOKIE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(session_cookie)
+        });
     let presented = presented.as_deref().unwrap_or("");
 
     if constant_time_eq(presented.as_bytes(), expected.as_bytes()) {

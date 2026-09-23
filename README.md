@@ -146,6 +146,26 @@ export API_TOKEN="$(openssl rand -hex 32)"
 cargo run --release --bin dcfs-server
 ```
 
+### A browser UI
+
+`http://localhost:8080/ui` is a file manager: browse, upload by drag and drop,
+download, rename, delete, make folders. One page, no build step, no npm — it
+talks to the same API as every other client.
+
+Signing in trades the API token for a session, and the session comes back as an
+**HttpOnly cookie**. No script on the page can read it and nothing is kept in
+browser storage, so an injected script or a shared machine does not walk away
+with the credential that opens every file. Signing out revokes it server-side
+as well as clearing it, so a copied cookie stops working too.
+
+Uploads are sent one part at a time, the size the server stores them in, so a
+large file is never held in the browser's memory all at once.
+
+The cookie is marked `Secure` only when the request arrived over TLS, because a
+Secure cookie is dropped over plain HTTP and the UI could then never sign in on
+a local run. Over a network, use the `tls` profile: without it the token is in
+the sign-in request in the clear.
+
 ### Over a network
 
 The client and the server are separate processes speaking HTTP, so a mount does
