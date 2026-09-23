@@ -176,6 +176,32 @@ one namespace, `uid` and `gid` are stored but nothing is authorised against
 them. Do not put a shared filesystem in front of people who should not all see
 each other's files.
 
+### Mounting it without FUSE
+
+The server speaks WebDAV at `/dav`, so anything with a built-in client can
+mount it — no kernel module, and not only Linux. It is the same filesystem: a
+file written over WebDAV is there over the byte API and the other way round,
+because both go through the same read and write functions.
+
+```bash
+# Linux
+gio mount dav://localhost:8080/dav          # or: mount -t davfs
+
+# macOS: Finder, Go > Connect to Server
+open 'http://localhost:8080/dav'
+
+# Windows
+net use Z: http://localhost:8080/dav
+```
+
+Desktop clients cannot send a bearer token, so the API token is accepted as the
+password of a Basic credential too. The username is ignored — there is one
+namespace and no user to identify. **Use TLS for this.** Basic auth puts the
+token in every request, and without TLS it is on the wire in the clear.
+
+Windows refuses Basic over plain HTTP by default, and macOS prefers HTTPS, so
+in practice this wants the `tls` profile above rather than port 8080.
+
 ### Mounting it
 
 The FUSE client is not in the compose stack: it needs `/dev/fuse` and a mount

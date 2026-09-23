@@ -24,6 +24,48 @@ pub fn hash_token(token: &str) -> String {
     blake3::hash(token.as_bytes()).to_hex().to_string()
 }
 
+/// The token out of an Authorization header, however it was presented.
+///
+/// WebDAV clients — Finder, Windows Explorer, gvfs — speak Basic and have no
+/// way to send a bearer token, so the token is accepted as the password of a
+/// Basic credential too. The username is ignored: there is one namespace and
+/// no user to identify.
+pub fn presented_token_for_test(header_value: &str) -> Option<String> {
+    presented_token(header_value)
+}
+
+fn presented_token(header_value: &str) -> Option<String> {
+    if let Some(token) = header_value.strip_prefix("Bearer ") {
+        return Some(token.to_string());
+    }
+    let encoded = header_value.strip_prefix("Basic ")?;
+    let decoded = base64_decode(encoded)?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (_user, password) = decoded.split_once(':')?;
+    Some(password.to_string())
+}
+
+/// Just enough base64 to read a Basic credential.
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::new();
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in input.bytes() {
+        if byte == b'=' || byte.is_ascii_whitespace() {
+            continue;
+        }
+        let value = ALPHABET.iter().position(|c| *c == byte)? as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// Compare two secrets without leaking their contents through timing.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     // Length is not secret, but the comparison below must still touch every
@@ -52,12 +94,13 @@ pub async fn require_token(
         return next.run(request).await;
     };
 
-    let presented = request
+    let header_value = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or("");
+    let presented = presented_token(header_value);
+    let presented = presented.as_deref().unwrap_or("");
 
     if constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
         return next.run(request).await;
@@ -92,12 +135,13 @@ pub async fn require_bootstrap_token(
     let Some(expected) = state.api_token.as_ref() else {
         return next.run(request).await;
     };
-    let presented = request
+    let header_value = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or("");
+    let presented = presented_token(header_value);
+    let presented = presented.as_deref().unwrap_or("");
 
     if constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
         return next.run(request).await;

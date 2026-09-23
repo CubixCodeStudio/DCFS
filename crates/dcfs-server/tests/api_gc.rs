@@ -41,6 +41,21 @@ async fn fixture() -> Fixture {
 }
 
 impl Fixture {
+    async fn create_dir(&self, raw_name: &[u8]) -> String {
+        let (status, body) = send(
+            &self.router,
+            "POST",
+            "/api/v1/nodes",
+            Some(json!({
+                "parent_id": self.root_id, "name": name(raw_name), "kind": "Directory",
+                "mode": 0o40755, "uid": 0, "gid": 0, "idempotency_key": key(),
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        body["id"].as_str().unwrap().to_string()
+    }
+
     async fn create_file(&self, raw_name: &[u8]) -> String {
         let (status, body) = send(
             &self.router,
@@ -330,4 +345,45 @@ async fn an_upload_resumed_after_the_collector_ran_has_no_hole() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     assert_eq!(fx.read_all(&file).await, b"committed-prefix-and-the-rest");
+}
+
+/// "Move to trash" in a file manager is a rename, not a delete: the file goes
+/// to `.Trash-1000/files/` on the same filesystem and is still very much
+/// there. Its bytes must stay with it — collecting them would empty a file the
+/// user can still see and expects to be able to restore.
+#[tokio::test]
+async fn moving_a_file_to_the_trash_keeps_its_bytes() {
+    let fx = fixture().await;
+    let trash = fx.create_dir(b".Trash-1000").await;
+    let file = fx.create_file(b"wanted-back.bin").await;
+    fx.write(&file, 0, &vec![b'x'; (TEST_CHUNK_SIZE * 2) as usize])
+        .await;
+    assert_eq!(fx.store.len(), 2);
+
+    // What the file manager actually does: rename into the trash directory.
+    let (status, body) = send(
+        &fx.router,
+        "POST",
+        &format!("/api/v1/nodes/{file}/rename"),
+        Some(json!({
+            "new_parent_id": trash,
+            "new_name": name(b"wanted-back.bin"),
+            "idempotency_key": key(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(fx.sweep().await.objects_deleted, 0);
+    assert_eq!(fx.store.len(), 2, "a file in the trash is still a file");
+    assert_eq!(
+        fx.read_all(&file).await.len(),
+        (TEST_CHUNK_SIZE * 2) as usize
+    );
+
+    // Emptying the trash is the delete, and only then do the bytes go.
+    let (status, _) = send(&fx.router, "DELETE", &format!("/api/v1/nodes/{file}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(fx.sweep().await.objects_deleted, 2);
+    assert_eq!(fx.store.len(), 0);
 }

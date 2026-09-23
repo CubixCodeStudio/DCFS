@@ -160,22 +160,43 @@ pub async fn read_data(
     Path(node_id): Path<Uuid>,
     Query(query): Query<ReadQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let (bytes, committed) = read_bytes(&state, node_id, query.offset, query.size).await?;
+    let headers = if committed {
+        COMMITTED_HEADERS
+    } else {
+        UNCOMMITTED_HEADERS
+    };
+    Ok((StatusCode::OK, headers, bytes))
+}
+
+/// Read a range of a file, and say whether the bytes may be cached.
+///
+/// Every surface reads through this — the byte API and the WebDAV gateway —
+/// so none of them can drift from the others on holes, segment boundaries or
+/// what an open write is allowed to show.
+pub async fn read_bytes(
+    state: &AppState,
+    node_id: Uuid,
+    offset: Option<u64>,
+    size: Option<u64>,
+) -> Result<(Bytes, bool), AppError> {
     let node = state.repo.get_node(node_id).await?;
     if node.kind == "directory" {
         return Err(AppError::bad_request("cannot read a directory"));
     }
 
+    let query = ReadQuery { offset, size };
     let offset = query.offset.unwrap_or(0);
     let file_size = node.size.max(0) as u64;
     if offset >= file_size {
-        return Ok((StatusCode::OK, COMMITTED_HEADERS, Bytes::new()));
+        return Ok((Bytes::new(), true));
     }
     let size = query
         .size
         .unwrap_or(file_size - offset)
         .min(file_size - offset);
     if size == 0 {
-        return Ok((StatusCode::OK, COMMITTED_HEADERS, Bytes::new()));
+        return Ok((Bytes::new(), true));
     }
 
     // A write in progress builds one staging version and commits it on sync,
@@ -186,16 +207,11 @@ pub async fn read_data(
         Err(RepositoryError::NotFound) => {
             let Some(version_id) = node.current_version_id else {
                 // Size without a version means nothing exists yet.
-                return Ok((StatusCode::OK, COMMITTED_HEADERS, Bytes::new()));
+                return Ok((Bytes::new(), true));
             };
             (state.repo.get_version(version_id).await?, true)
         }
         Err(e) => return Err(e.into()),
-    };
-    let headers = if committed {
-        COMMITTED_HEADERS
-    } else {
-        UNCOMMITTED_HEADERS
     };
     let version_id = version.id;
     let chunk_size = version.chunk_size.max(1) as u64;
@@ -252,7 +268,7 @@ pub async fn read_data(
         out.extend_from_slice(&piece);
     }
 
-    Ok((StatusCode::OK, headers, Bytes::from(out)))
+    Ok((Bytes::from(out), committed))
 }
 
 /// `PUT /api/v1/nodes/:id/data?offset=` with the raw bytes as the body.
@@ -266,9 +282,23 @@ pub async fn write_data(
     Query(query): Query<WriteQuery>,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
-    let offset = query.offset.unwrap_or(0);
+    let written = write_bytes(&state, node_id, query.offset.unwrap_or(0), body).await?;
+    Ok((StatusCode::OK, written.to_string()))
+}
+
+/// Write bytes at an offset, returning how many were taken.
+///
+/// Shared by the byte API and the WebDAV gateway, so a write means the same
+/// thing whichever way it arrives: the same open session, the same commit
+/// points, the same locking.
+pub async fn write_bytes(
+    state: &AppState,
+    node_id: Uuid,
+    offset: u64,
+    body: Bytes,
+) -> Result<usize, AppError> {
     if body.is_empty() {
-        return Ok((StatusCode::OK, "0".to_string()));
+        return Ok(0);
     }
 
     // Serialize writers to this file: everything below reads the node, adds to
@@ -369,7 +399,7 @@ pub async fn write_data(
             Vec::with_capacity(chunk_len as usize)
         } else {
             match existing {
-                Some(chunk) => read_chunk_plaintext(&state, chunk).await?,
+                Some(chunk) => read_chunk_plaintext(state, chunk).await?,
                 // Writing past the end leaves a zero-filled hole, as POSIX expects.
                 None => Vec::new(),
             }
@@ -383,8 +413,7 @@ pub async fn write_data(
                 );
         }
 
-        let (object_id, plaintext_hash) =
-            write_chunk_plaintext(&state, &plaintext, node_id).await?;
+        let (object_id, plaintext_hash) = write_chunk_plaintext(state, &plaintext, node_id).await?;
         state
             .repo
             .attach_chunk(
@@ -414,10 +443,10 @@ pub async fn write_data(
     // second server cannot see is the wrong place; the sizes say the same
     // thing and are already in the database.
     if new_size / COMMIT_EVERY_BYTES > old_size / COMMIT_EVERY_BYTES {
-        commit_working_version(&state, node_id).await?;
+        commit_working_version(state, node_id).await?;
     }
 
-    Ok((StatusCode::OK, body.len().to_string()))
+    Ok(body.len())
 }
 
 /// Commit the version a write has been building, if there is one.
@@ -459,11 +488,19 @@ pub async fn sync_node(
     State(state): State<AppState>,
     Path(node_id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
+    commit_node(&state, node_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Close a file: commit whatever write was open on it.
+///
+/// Shared with the WebDAV gateway, so closing means the same thing there.
+pub async fn commit_node(state: &AppState, node_id: Uuid) -> Result<(), AppError> {
     state.repo.get_node(node_id).await?;
     // Writers add to one staging version and this is what makes it the file.
     let lock = state.write_lock(node_id);
     let _local = lock.lock().await;
     let _shared = state.repo.lock_node(node_id).await?;
-    commit_working_version(&state, node_id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    commit_working_version(state, node_id).await?;
+    Ok(())
 }

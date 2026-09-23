@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod dav;
 pub mod error;
 pub mod gc;
 pub mod handlers;
@@ -13,9 +14,9 @@ pub mod locators;
 pub mod state;
 
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
     middleware,
-    routing::{delete, get, patch, post, put},
+    routing::{any, delete, get, patch, post, put},
     Router,
 };
 use dcfs_db::{MemoryMetadataRepository, MetadataRepository};
@@ -27,6 +28,16 @@ pub use state::AppState;
 
 /// Build the Axum router with all routes.
 ///
+/// Hands a request to the WebDAV handler and puts its response back into
+/// axum's shape.
+async fn serve_dav(
+    State(handler): State<dav_server::DavHandler>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let (parts, body) = handler.handle(request).await.into_parts();
+    axum::response::Response::from_parts(parts, axum::body::Body::new(body))
+}
+
 /// Health endpoints sit outside the auth layer so a probe does not need the
 /// token; everything under `/api` requires it.
 pub fn build_router(state: AppState) -> Router {
@@ -45,11 +56,29 @@ pub fn build_router(state: AppState) -> Router {
         )
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
-            state,
+            state.clone(),
             auth::require_bootstrap_token,
         ));
 
+    // WebDAV, behind the same token as everything else. A desktop client
+    // sends it as a Basic password; the API's own clients keep using Bearer.
+    let dav_handler = dav_server::DavHandler::builder()
+        .filesystem(dav::DcfsFs::new(state.clone()))
+        .strip_prefix("/dav")
+        .locksystem(dav_server::memls::MemLs::new())
+        .build_handler();
+    let dav = Router::new()
+        .route("/dav", any(serve_dav))
+        .route("/dav/*rest", any(serve_dav))
+        .layer(DefaultBodyLimit::max(MAX_WRITE_BYTES))
+        .with_state(dav_handler)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_token,
+        ));
+
     Router::new()
+        .merge(dav)
         .route("/health", get(handlers::health::health_check))
         .route("/health/ready", get(handlers::health::readiness_check))
         .merge(sessions)
