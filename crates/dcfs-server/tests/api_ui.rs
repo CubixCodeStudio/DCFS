@@ -125,3 +125,49 @@ async fn the_cookie_opens_the_api_and_signing_out_closes_it() {
     let (status, _, _) = request(&router, "GET", "/api/v1/nodes/root", Some(&session), "").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "the old cookie is dead");
 }
+
+/// Every language table has the same keys. A key present in one and not the
+/// other renders as a blank label in the language that lacks it, which nobody
+/// notices until a user does.
+#[test]
+fn every_language_translates_every_string() {
+    let page = include_str!("../src/ui/index.html");
+    let start = page.find("const STRINGS = {").expect("the language tables");
+    let tables = &page[start..];
+    let end = tables.find("\n};").expect("the end of the tables");
+    let tables = &tables[..end];
+
+    // Split on the language headers — `  th: {`, `  en: {` — and collect the
+    // keys each one defines.
+    let mut languages: Vec<(String, std::collections::BTreeSet<String>)> = Vec::new();
+    for line in tables.lines() {
+        let trimmed = line.trim();
+        if line.starts_with("  ") && !line.starts_with("    ") && trimmed.ends_with(": {") {
+            languages.push((
+                trimmed.trim_end_matches(": {").to_string(),
+                Default::default(),
+            ));
+        } else if line.starts_with("    ") && !line.starts_with("      ") {
+            if let Some((key, _)) = trimmed.split_once(':') {
+                if let Some((_, keys)) = languages.last_mut() {
+                    keys.insert(key.trim().to_string());
+                }
+            }
+        }
+    }
+
+    assert!(languages.len() >= 2, "found {languages:?}");
+    let (first_lang, first_keys) = &languages[0];
+    assert!(
+        first_keys.len() > 10,
+        "{first_lang} looks empty: {first_keys:?}"
+    );
+    for (lang, keys) in &languages[1..] {
+        let missing: Vec<_> = first_keys.difference(keys).collect();
+        let extra: Vec<_> = keys.difference(first_keys).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "{lang} differs from {first_lang}: missing {missing:?}, extra {extra:?}"
+        );
+    }
+}

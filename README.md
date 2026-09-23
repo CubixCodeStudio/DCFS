@@ -161,6 +161,12 @@ as well as clearing it, so a copied cookie stops working too.
 Uploads are sent one part at a time, the size the server stores them in, so a
 large file is never held in the browser's memory all at once.
 
+The page speaks Thai and English. It follows the browser's language on the
+first visit and remembers a choice made with the switcher — that preference is
+the one thing kept in local storage, because a language is not a secret. Adding
+a language is one more table in `crates/dcfs-server/src/ui/index.html`, and a
+test fails the build if any table is missing a key another one has.
+
 The cookie is marked `Secure` only when the request arrived over TLS, because a
 Secure cookie is dropped over plain HTTP and the UI could then never sign in on
 a local run. Over a network, use the `tls` profile: without it the token is in

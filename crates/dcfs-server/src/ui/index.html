@@ -59,6 +59,79 @@
 <div id="status"></div>
 
 <script>
+// Language. Keys are shared by every table and a test asserts they match, so
+// a missing translation is a failing build rather than a blank label.
+const STRINGS = {
+  th: {
+    signInPrompt: "ใส่ API token เพื่อเข้าใช้งาน",
+    signIn: "เข้าสู่ระบบ",
+    badToken: "token ไม่ถูกต้อง",
+    tokenPlaceholder: "API token",
+    newFolder: "โฟลเดอร์ใหม่",
+    upload: "อัปโหลด",
+    signOut: "ออก",
+    dropHere: "ลากไฟล์มาวางที่นี่",
+    empty: "ว่างเปล่า",
+    colName: "ชื่อ",
+    colSize: "ขนาด",
+    colModified: "แก้ไขล่าสุด",
+    rename: "เปลี่ยนชื่อ",
+    remove: "ลบ",
+    askFolderName: "ชื่อโฟลเดอร์",
+    askNewName: "ชื่อใหม่",
+    confirmRemove: (name) =>
+      `ลบ "${name}" ?\n\nไฟล์จะหายทันที ส่วนข้อมูลบน backend จะถูกเก็บกวาดภายหลัง`,
+    done: "เสร็จ",
+    language: "ภาษา",
+  },
+  en: {
+    signInPrompt: "Enter the API token to continue",
+    signIn: "Sign in",
+    badToken: "Wrong token",
+    tokenPlaceholder: "API token",
+    newFolder: "New folder",
+    upload: "Upload",
+    signOut: "Sign out",
+    dropHere: "Drop files here",
+    empty: "Nothing here",
+    colName: "Name",
+    colSize: "Size",
+    colModified: "Modified",
+    rename: "Rename",
+    remove: "Delete",
+    askFolderName: "Folder name",
+    askNewName: "New name",
+    confirmRemove: (name) =>
+      `Delete "${name}"?\n\nIt disappears now; the bytes on the backend are collected later.`,
+    done: "done",
+    language: "Language",
+  },
+};
+
+// Remembered per browser. A language is a preference, not a secret, so this
+// is the one thing that belongs in local storage — the credential never does.
+function pickLanguage() {
+  try {
+    const saved = localStorage.getItem("dcfs_lang");
+    if (saved && STRINGS[saved]) return saved;
+  } catch { /* private window, or storage blocked */ }
+  return (navigator.language || "").toLowerCase().startsWith("th") ? "th" : "en";
+}
+
+let lang = pickLanguage();
+document.documentElement.lang = lang;
+
+function t(key, ...args) {
+  const value = STRINGS[lang][key];
+  return typeof value === "function" ? value(...args) : value;
+}
+
+function setLanguage(next) {
+  lang = next;
+  document.documentElement.lang = next;
+  try { localStorage.setItem("dcfs_lang", next); } catch { /* fine */ }
+}
+
 const $ = (sel) => document.querySelector(sel);
 const app = $("#app"), statusBar = $("#status");
 let chunkSize = 8 << 20;
@@ -96,15 +169,16 @@ const size = (n) => {
   while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
   return value.toFixed(value < 10 ? 1 : 0) + " " + units[unit];
 };
-const when = (iso) => new Date(iso).toLocaleString();
+const when = (iso) => new Date(iso).toLocaleString(lang === "th" ? "th-TH" : "en-GB");
 
 function showLogin() {
   app.innerHTML = `
     <form class="login">
       <h1>DCFS</h1>
-      <p>ใส่ API token เพื่อเข้าใช้งาน</p>
-      <input type="password" id="token" placeholder="API token" autocomplete="current-password" required>
-      <button class="primary" type="submit">เข้าสู่ระบบ</button>
+      <p>${t("signInPrompt")}</p>
+      <input type="password" id="token" placeholder="${t("tokenPlaceholder")}" autocomplete="current-password" required>
+      <button class="primary" type="submit">${t("signIn")}</button>
+      <div id="langpick"></div>
     </form>`;
   $("form.login").onsubmit = async (event) => {
     event.preventDefault();
@@ -116,8 +190,23 @@ function showLogin() {
       body: JSON.stringify({ token: $("#token").value }),
     });
     if (response.ok) { trail = []; await start(); }
-    else say("token ไม่ถูกต้อง", true);
+    else say(t("badToken"), true);
   };
+  renderLanguagePicker($("#langpick"), showLogin);
+}
+
+/// A row of language buttons that re-renders whatever is on screen.
+function renderLanguagePicker(host, redraw) {
+  if (!host) return;
+  host.textContent = "";
+  for (const code of Object.keys(STRINGS)) {
+    const button = document.createElement("button");
+    button.className = "link";
+    button.textContent = code.toUpperCase();
+    button.disabled = code === lang;
+    button.onclick = () => { setLanguage(code); redraw(); };
+    host.append(button);
+  }
 }
 
 async function start() {
@@ -144,16 +233,17 @@ async function render() {
       <h1>DCFS</h1>
       <nav id="crumbs"></nav>
       <span class="grow"></span>
-      <button id="mkdir">โฟลเดอร์ใหม่</button>
-      <button class="primary" id="pick">อัปโหลด</button>
-      <button id="signout">ออก</button>
+      <span id="langpick"></span>
+      <button id="mkdir">${t("newFolder")}</button>
+      <button class="primary" id="pick">${t("upload")}</button>
+      <button id="signout">${t("signOut")}</button>
       <input type="file" id="files" multiple hidden>
     </header>
     <main>
-      <div id="drop">ลากไฟล์มาวางที่นี่</div>
-      ${rows.length === 0 ? '<p class="empty">ว่างเปล่า</p>' : `
+      <div id="drop">${t("dropHere")}</div>
+      ${rows.length === 0 ? `<p class="empty">${t("empty")}</p>` : `
       <table>
-        <thead><tr><th>ชื่อ</th><th>ขนาด</th><th>แก้ไขล่าสุด</th><th></th></tr></thead>
+        <thead><tr><th>${t("colName")}</th><th>${t("colSize")}</th><th>${t("colModified")}</th><th></th></tr></thead>
         <tbody></tbody>
       </table>`}
     </main>`;
@@ -193,11 +283,11 @@ async function render() {
     actions.className = "actions";
     const rename = document.createElement("button");
     rename.className = "link";
-    rename.textContent = "เปลี่ยนชื่อ";
+    rename.textContent = t("rename");
     rename.onclick = () => renameNode(node);
     const remove = document.createElement("button");
     remove.className = "link danger";
-    remove.textContent = "ลบ";
+    remove.textContent = t("remove");
     remove.onclick = () => removeNode(node);
     actions.append(rename, remove);
 
@@ -205,6 +295,7 @@ async function render() {
     body.append(tr);
   }
 
+  renderLanguagePicker($("#langpick"), render);
   $("#pick").onclick = () => $("#files").click();
   $("#files").onchange = (event) => upload([...event.target.files]);
   $("#mkdir").onclick = mkdir;
@@ -224,7 +315,7 @@ async function render() {
 }
 
 async function mkdir() {
-  const label = prompt("ชื่อโฟลเดอร์");
+  const label = prompt(t("askFolderName"));
   if (!label) return;
   try {
     await api("/nodes", {
@@ -241,7 +332,7 @@ async function mkdir() {
 }
 
 async function renameNode(node) {
-  const label = prompt("ชื่อใหม่", node.label);
+  const label = prompt(t("askNewName"), node.label);
   if (!label || label === node.label) return;
   try {
     await api(`/nodes/${node.id}/rename`, {
@@ -260,7 +351,7 @@ async function renameNode(node) {
 async function removeNode(node) {
   // Says what actually happens: unlinking hides it now, and the bytes go when
   // the collector next runs past the retention window.
-  if (!confirm(`ลบ "${node.label}" ?\n\nไฟล์จะหายทันที ส่วนข้อมูลบน backend จะถูกเก็บกวาดภายหลัง`)) return;
+  if (!confirm(t("confirmRemove", node.label))) return;
   try {
     await api(`/nodes/${node.id}`, { method: "DELETE" });
     say("");
@@ -302,7 +393,7 @@ async function upload(files) {
       }
       // Closing the file is what commits it.
       await api(`/nodes/${created.id}/sync`, { method: "POST" });
-      say(`${file.name}: เสร็จ`);
+      say(`${file.name}: ${t("done")}`);
     } catch (e) {
       say(`${file.name}: ${e.message}`, true);
     }
