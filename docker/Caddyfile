@@ -1,0 +1,20 @@
+# TLS in front of the server.
+#
+# Without it the bearer token crosses the network in the clear, which is fine
+# over loopback and not fine anywhere else. The client takes any URL, so this
+# needs no change on its side beyond pointing DCFS_SERVER at https.
+#
+# DCFS_DOMAIN defaults to localhost with a certificate from Caddy's own local
+# CA — enough for a LAN, and every client has to trust that CA. Set it to a
+# real name that resolves publicly and delete the `tls internal` line to have
+# Caddy fetch a public certificate instead.
+{$DCFS_DOMAIN:localhost} {
+	tls internal
+	reverse_proxy server:8080 {
+		# A 30 GB upload is one long request; the defaults would cut it off.
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}

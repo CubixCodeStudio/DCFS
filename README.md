@@ -146,6 +146,36 @@ export API_TOKEN="$(openssl rand -hex 32)"
 cargo run --release --bin dcfs-server
 ```
 
+### Over a network
+
+The client and the server are separate processes speaking HTTP, so a mount does
+not have to be on the same machine as the server — that part is already true.
+What is missing over a real network is TLS: the bearer token is in the request,
+and without it anything on the path can read it.
+
+```bash
+cd docker
+echo "DCFS_DOMAIN=dcfs.example.org" >> .env      # or leave it as localhost
+docker compose --profile tls up -d
+```
+
+That puts Caddy in front on port 443. By default it issues a certificate from
+its own local CA, which is enough for a LAN as long as every client trusts that
+CA; point `DCFS_DOMAIN` at a name that resolves publicly and drop the
+`tls internal` line in `docker/Caddyfile` to have a public certificate fetched
+instead. The client needs no change beyond the URL, as it takes any:
+
+```bash
+DCFS_SERVER=https://dcfs.example.org DCFS_TOKEN="$API_TOKEN" dcfs-fuse /mnt/dcfs
+```
+
+**One token is not a user system.** Everyone who can reach the server holds the
+same secret and every file is reachable with it — `POST /api/v1/sessions` issues
+revocable tokens with an expiry, but each one still opens everything. There is
+one namespace, `uid` and `gid` are stored but nothing is authorised against
+them. Do not put a shared filesystem in front of people who should not all see
+each other's files.
+
 ### Mounting it
 
 The FUSE client is not in the compose stack: it needs `/dev/fuse` and a mount

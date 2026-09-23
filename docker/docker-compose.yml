@@ -60,6 +60,27 @@ services:
       - objects:/var/lib/dcfs
     restart: unless-stopped
 
+  # Only with `--profile tls`: TLS in front of the server, because the bearer
+  # token is otherwise readable by anything on the path. Left out of the
+  # default stack, which serves loopback and needs none of it.
+  proxy:
+    image: caddy:2-alpine
+    profiles: [tls]
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      DCFS_DOMAIN: ${DCFS_DOMAIN:-localhost}
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
 volumes:
   pgdata:
   objects:
+  caddy_data:
+  caddy_config:

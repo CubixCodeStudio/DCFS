@@ -34,7 +34,7 @@ EXPOSE 8080
 # Says the process is up and serving. It does not reach the database, so a
 # server that is running with a database it cannot talk to still reads as
 # healthy; compose waits on PostgreSQL's own healthcheck for that.
-HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=3s --start-period=45s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8080/health || exit 1
 
 ENTRYPOINT ["dcfs-server"]
