@@ -189,6 +189,20 @@ async fn status(mut args: impl Iterator<Item = String>) -> ExitCode {
     }
 }
 
+fn checked_resume_offset(remote_size: u64, local_size: u64) -> Result<u64, ()> {
+    if remote_size > local_size {
+        Err(())
+    } else {
+        Ok(remote_size)
+    }
+}
+
+fn next_read_len(total: u64, offset: u64, capacity: usize) -> usize {
+    total
+        .saturating_sub(offset)
+        .min(capacity as u64) as usize
+}
+
 /// Upload a local file, sending only what the server does not already have.
 ///
 /// A large upload can take hours — 30 GB measured at close to four — so the
@@ -323,7 +337,16 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
             }
             let id = node["id"].as_str().unwrap_or_default().to_string();
             let parent = node["parent_id"].as_str().unwrap_or_default().to_string();
-            let taken = node["size"].as_u64().unwrap_or(0).min(total);
+            let remote_size = node["size"].as_u64().unwrap_or(0);
+            let taken = match checked_resume_offset(remote_size, total) {
+                Ok(offset) => offset,
+                Err(()) => {
+                    eprintln!(
+                        "dcfs: partial upload {upload_name} is {remote_size} bytes but local source is only {total}; refusing to publish or truncate it"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             (id, parent, taken)
         }
         _ => {
@@ -407,10 +430,12 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
     let started = std::time::Instant::now();
     let mut buf = vec![0u8; part_size as usize];
     while offset < total {
-        // Short reads are normal on a pipe-backed file; fill the part.
+        // Never read past the size captured at startup. If the source grows
+        // concurrently, those new bytes belong to a later upload, not this one.
+        let wanted = next_read_len(total, offset, buf.len());
         let mut filled = 0;
-        while filled < buf.len() {
-            match file.read(&mut buf[filled..]) {
+        while filled < wanted {
+            match file.read(&mut buf[filled..wanted]) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
                 Err(e) => {
@@ -420,7 +445,10 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
             }
         }
         if filled == 0 {
-            break;
+            eprintln!(
+                "dcfs: source ended at {offset} bytes but was {total} bytes when upload started; partial upload remains as {upload_name}"
+            );
+            return ExitCode::FAILURE;
         }
 
         // Retry a part rather than lose an upload that is hours in.
@@ -458,6 +486,13 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         );
     }
     eprintln!();
+
+    if offset != total {
+        eprintln!(
+            "dcfs: source changed during upload; sent {offset} of the original {total} bytes and will not publish"
+        );
+        return ExitCode::FAILURE;
+    }
 
     // Sync first, then publish atomically under the requested name.
     match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/sync")))
@@ -511,5 +546,24 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
             );
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod put_tests {
+    use super::{checked_resume_offset, next_read_len};
+
+    #[test]
+    fn resume_rejects_remote_larger_than_local_source() {
+        assert_eq!(checked_resume_offset(10, 10), Ok(10));
+        assert_eq!(checked_resume_offset(9, 10), Ok(9));
+        assert_eq!(checked_resume_offset(11, 10), Err(()));
+    }
+
+    #[test]
+    fn read_window_never_exceeds_initial_source_size() {
+        assert_eq!(next_read_len(10, 0, 8), 8);
+        assert_eq!(next_read_len(10, 8, 8), 2);
+        assert_eq!(next_read_len(10, 10, 8), 0);
     }
 }
