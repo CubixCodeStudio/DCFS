@@ -179,6 +179,24 @@ async fn test_read_crossing_real_eof_is_still_a_normal_short_read() {
     assert_eq!(data, b"c");
 }
 
+#[tokio::test]
+async fn test_read_after_local_write_refreshes_size_and_version() {
+    use std::sync::Arc;
+
+    let client = Arc::new(FakeClient::new());
+    let root_id = FakeClient::root_id();
+    create_file(client.as_ref(), root_id, b"read-after-write.bin").await;
+
+    let fs = Fs::mount(client).await.unwrap();
+    let attr = fs.lookup(ROOT_INO, b"read-after-write.bin").await.unwrap();
+    fs.write(attr.ino, 0, b"abc").await.unwrap();
+
+    // read() flushes the buffered write. It must then refresh the metadata
+    // remembered by lookup rather than treating the old zero-byte size as EOF.
+    let data = fs.read(attr.ino, 0, 3).await.unwrap();
+    assert_eq!(data, b"abc");
+}
+
 // ============================================================
 // Nested directory tests
 // ============================================================

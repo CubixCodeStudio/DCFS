@@ -476,15 +476,29 @@ impl<C: ServerClient> Fs<C> {
         // returning fewer bytes inside the logical file. Exact-read callers
         // must not receive an unexpected short read before logical EOF.
         //
-        // Drop the inode lock before any await: the metadata fallback below
-        // hits the network.
-        let remembered = self.inodes.lock().seen.get(&ino).copied();
-        let (version_id, file_size) = match remembered {
-            Some((version, file_size)) => (version, file_size),
-            None => {
-                let node = self.client.get_node(node_id).await?;
-                (node.current_version_id, node.size)
-            }
+        // A local write can change both size and version. After flush the server
+        // is authoritative, so do not reuse metadata remembered before that write:
+        // an old size can turn valid bytes into EOF, and an old version can poison
+        // the immutable block-cache namespace with newer contents.
+        //
+        // Drop the inode lock before any await: the metadata refresh hits the network.
+        let (remembered, locally_written) = {
+            let inodes = self.inodes.lock();
+            (
+                inodes.seen.get(&ino).copied(),
+                inodes.high_water.contains_key(&ino),
+            )
+        };
+        let (version_id, file_size) = if locally_written || remembered.is_none() {
+            let node = self.client.get_node(node_id).await?;
+            let mut inodes = self.inodes.lock();
+            inodes
+                .seen
+                .insert(ino, (node.current_version_id, node.size));
+            inodes.high_water.remove(&ino);
+            (node.current_version_id, node.size)
+        } else {
+            remembered.expect("checked above")
         };
         let expected = size.min(file_size.saturating_sub(offset));
         if expected == 0 {
