@@ -108,6 +108,10 @@ fn api_routes(state: AppState) -> Router {
             post(handlers::nodes::rename_node),
         )
         .route(
+            "/api/v1/nodes/:id/publish",
+            post(handlers::nodes::publish_node),
+        )
+        .route(
             "/api/v1/nodes/:id/children",
             get(handlers::nodes::list_children),
         )

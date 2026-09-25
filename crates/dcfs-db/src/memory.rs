@@ -218,6 +218,29 @@ impl MetadataRepository for MemoryMetadataRepository {
         Ok(())
     }
 
+    async fn publish_node(
+        &self,
+        id: Uuid,
+        new_parent_id: Uuid,
+        new_name: Vec<u8>,
+    ) -> Result<(), RepositoryError> {
+        let mut nodes = self.nodes.write();
+        if !nodes.contains_key(&id) {
+            return Err(RepositoryError::NotFound);
+        }
+        if nodes.values().any(|n| {
+            n.id != id && n.parent_id == Some(new_parent_id) && n.name == new_name
+        }) {
+            return Err(RepositoryError::AlreadyExists);
+        }
+
+        let node = nodes.get_mut(&id).ok_or(RepositoryError::NotFound)?;
+        node.parent_id = Some(new_parent_id);
+        node.name = new_name;
+        node.ctime = Utc::now();
+        Ok(())
+    }
+
     async fn update_node_attr(
         &self,
         id: Uuid,

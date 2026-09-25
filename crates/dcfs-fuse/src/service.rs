@@ -37,6 +37,17 @@ const STATFS_NOMINAL_BYTES: u64 = 1024 * 1024 * 1024 * 1024 * 1024;
 /// decrypting and re-encrypting them to merge a few bytes in.
 const WRITE_BUFFER_BYTES: u64 = 4 * 1024 * 1024;
 
+/// A read that stops before the file's logical EOF is not EOF. Reporting it
+/// as such makes callers accept a truncated view of an otherwise larger file.
+fn short_read_error(offset: u64, expected: u64, got: usize, file_size: u64) -> ClientError {
+    ClientError::Io(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        format!(
+            "short read at offset {offset}: expected {expected} bytes before EOF at {file_size}, got {got}"
+        ),
+    ))
+}
+
 /// Node attributes in kernel terms, with no `fuser` types involved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attr {
@@ -460,38 +471,83 @@ impl<C: ServerClient> Fs<C> {
         self.flush(ino).await?;
         let node_id = self.id_for(ino)?;
 
+        // Distinguish a legitimate read that crosses EOF from a backend/cache
+        // returning fewer bytes inside the logical file. Exact-read callers
+        // must not receive an unexpected short read before logical EOF.
+        //
+        // A local write can change both size and version. After flush the server
+        // is authoritative, so do not reuse metadata remembered before that write:
+        // an old size can turn valid bytes into EOF, and an old version can poison
+        // the immutable block-cache namespace with newer contents.
+        //
+        // Drop the inode lock before any await: the metadata refresh hits the network.
+        let (remembered, locally_written) = {
+            let inodes = self.inodes.lock();
+            (
+                inodes.seen.get(&ino).copied(),
+                inodes.high_water.contains_key(&ino),
+            )
+        };
+        let (version_id, file_size) = if locally_written || remembered.is_none() {
+            let node = self.client.get_node(node_id).await?;
+            let mut inodes = self.inodes.lock();
+            inodes
+                .seen
+                .insert(ino, (node.current_version_id, node.size));
+            // Keep high_water: it is also the filesystem's record of locally
+            // accepted size and may have been advanced by a concurrent write.
+            // Files written through this mount therefore refresh metadata on
+            // reads instead of risking a stale version cache key.
+            (node.current_version_id, node.size)
+        } else {
+            remembered.expect("checked above")
+        };
+        let expected = size.min(file_size.saturating_sub(offset));
+        if expected == 0 {
+            return Ok(Vec::new());
+        }
+
         let Some(cache) = self.cache.as_ref() else {
-            return self.client.read_file(node_id, offset, size).await;
+            let out = self.client.read_file(node_id, offset, expected).await?;
+            if (out.len() as u64) < expected {
+                return Err(short_read_error(offset, expected, out.len(), file_size));
+            }
+            return Ok(out);
         };
 
         // Blocks are keyed by version, so a file with nothing committed yet has
         // nothing cacheable, and a new version simply misses.
-        // Drop the lock before any await: the fallback below hits the network.
-        let remembered = self.inodes.lock().seen.get(&ino).copied();
-        let version_id = match remembered {
-            Some((version, _)) => version,
-            None => self.client.get_node(node_id).await?.current_version_id,
-        };
         let Some(version_id) = version_id else {
-            return self.client.read_file(node_id, offset, size).await;
+            let out = self.client.read_file(node_id, offset, expected).await?;
+            if (out.len() as u64) < expected {
+                return Err(short_read_error(offset, expected, out.len(), file_size));
+            }
+            return Ok(out);
         };
 
         let client = self.client.clone();
         let out = cache
-            .read(node_id, version_id, offset, size, move |at, len| {
+            .read(node_id, version_id, offset, expected, move |at, len| {
                 let client = client.clone();
                 async move { client.read_file_cacheable(node_id, at, len).await }
             })
             .await?;
-        if (out.len() as u64) < size {
-            tracing::debug!(
+        if (out.len() as u64) < expected {
+            tracing::warn!(
                 ino,
                 offset,
-                asked = size,
+                asked = expected,
                 got = out.len(),
                 %version_id,
-                "short read"
+                "short cached read before EOF; invalidating and retrying directly"
             );
+            cache.invalidate(node_id).await;
+
+            let retry = self.client.read_file(node_id, offset, expected).await?;
+            if (retry.len() as u64) < expected {
+                return Err(short_read_error(offset, expected, retry.len(), file_size));
+            }
+            return Ok(retry);
         }
         Ok(out)
     }

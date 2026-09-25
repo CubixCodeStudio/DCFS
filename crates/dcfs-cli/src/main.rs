@@ -189,6 +189,18 @@ async fn status(mut args: impl Iterator<Item = String>) -> ExitCode {
     }
 }
 
+fn checked_resume_offset(remote_size: u64, local_size: u64) -> Result<u64, ()> {
+    if remote_size > local_size {
+        Err(())
+    } else {
+        Ok(remote_size)
+    }
+}
+
+fn next_read_len(total: u64, offset: u64, capacity: usize) -> usize {
+    total.saturating_sub(offset).min(capacity as u64) as usize
+}
+
 /// Upload a local file, sending only what the server does not already have.
 ///
 /// A large upload can take hours — 30 GB measured at close to four — so the
@@ -272,13 +284,19 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         }
     };
 
-    // Already there, or new?
-    let existing = auth(http.get(format!("{server}/api/v1/nodes/resolve")))
+    // Upload under a non-final name and publish by rename only after sync.
+    // Consumers may scan by filename while an upload is still in progress.
+    // Keep the destination hidden until every byte is synced and durable.
+    let upload_name = format!(".{name}.dcfs-uploading");
+
+    // Refuse to overwrite a completed destination. --resume is for the hidden
+    // upload entry only; the final name means publication already happened.
+    let final_existing = auth(http.get(format!("{server}/api/v1/nodes/resolve")))
         .query(&[("path", format!("/{name}"))])
         .send()
         .await;
-    let (node_id, mut offset) = match existing {
-        Ok(resp) if resp.status().is_success() => {
+    if let Ok(resp) = final_existing {
+        if resp.status().is_success() {
             let node: serde_json::Value = match resp.json().await {
                 Ok(node) => node,
                 Err(e) => {
@@ -286,16 +304,48 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            eprintln!(
+                "dcfs: {name} already exists ({} bytes); refusing to overwrite a published file",
+                node["size"].as_u64().unwrap_or(0)
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // Resume a hidden partial upload, or create one.
+    let existing = auth(http.get(format!("{server}/api/v1/nodes/resolve")))
+        .query(&[("path", format!("/{upload_name}"))])
+        .send()
+        .await;
+    let (node_id, root_id, mut offset) = match existing {
+        Ok(resp) if resp.status().is_success() => {
+            let node: serde_json::Value = match resp.json().await {
+                Ok(node) => node,
+                Err(e) => {
+                    eprintln!("dcfs: {upload_name} is there but unreadable: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             if !resume {
                 eprintln!(
-                    "dcfs: {name} already exists ({} bytes); pass --resume to carry on",
+                    "dcfs: partial upload {upload_name} already exists ({} bytes); pass --resume to carry on",
                     node["size"].as_u64().unwrap_or(0)
                 );
                 return ExitCode::FAILURE;
             }
             let id = node["id"].as_str().unwrap_or_default().to_string();
-            let taken = node["size"].as_u64().unwrap_or(0).min(total);
-            (id, taken)
+            let parent = node["parent_id"].as_str().unwrap_or_default().to_string();
+            let remote_size = node["size"].as_u64().unwrap_or(0);
+            let taken = match checked_resume_offset(remote_size, total) {
+                Ok(offset) => offset,
+                Err(()) => {
+                    eprintln!(
+                        "dcfs: partial upload {upload_name} is {remote_size} bytes but local source is only {total}; refusing to publish or truncate it"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
+            (id, parent, taken)
         }
         _ => {
             let root = match auth(http.get(format!("{server}/api/v1/nodes/root")))
@@ -318,7 +368,7 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
                 "parent_id": root,
                 "name": base64::Engine::encode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                    name.as_bytes(),
+                    upload_name.as_bytes(),
                 ),
                 "kind": "File",
                 "mode": 0o100644,
@@ -333,7 +383,11 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
             {
                 Ok(resp) if resp.status().is_success() => {
                     match resp.json::<serde_json::Value>().await {
-                        Ok(node) => (node["id"].as_str().unwrap_or_default().to_string(), 0),
+                        Ok(node) => (
+                            node["id"].as_str().unwrap_or_default().to_string(),
+                            root,
+                            0,
+                        ),
                         Err(e) => {
                             eprintln!("dcfs: cannot read the new file: {e}");
                             return ExitCode::FAILURE;
@@ -341,11 +395,11 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
                     }
                 }
                 Ok(resp) => {
-                    eprintln!("dcfs: cannot create {name}: HTTP {}", resp.status());
+                    eprintln!("dcfs: cannot create {upload_name}: HTTP {}", resp.status());
                     return ExitCode::FAILURE;
                 }
                 Err(e) => {
-                    eprintln!("dcfs: cannot create {name}: {e}");
+                    eprintln!("dcfs: cannot create {upload_name}: {e}");
                     return ExitCode::FAILURE;
                 }
             }
@@ -353,11 +407,9 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
     };
 
     if offset >= total && total > 0 {
-        eprintln!("{name}: already complete ({total} bytes)");
-        return ExitCode::SUCCESS;
-    }
-    if offset > 0 {
-        eprintln!("{name}: resuming at {offset} of {total} bytes");
+        eprintln!("{upload_name}: already uploaded ({total} bytes); publishing");
+    } else if offset > 0 {
+        eprintln!("{upload_name}: resuming at {offset} of {total} bytes");
     }
 
     use std::io::{Read, Seek};
@@ -376,10 +428,12 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
     let started = std::time::Instant::now();
     let mut buf = vec![0u8; part_size as usize];
     while offset < total {
-        // Short reads are normal on a pipe-backed file; fill the part.
+        // Never read past the size captured at startup. If the source grows
+        // concurrently, those new bytes belong to a later upload, not this one.
+        let wanted = next_read_len(total, offset, buf.len());
         let mut filled = 0;
-        while filled < buf.len() {
-            match file.read(&mut buf[filled..]) {
+        while filled < wanted {
+            match file.read(&mut buf[filled..wanted]) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
                 Err(e) => {
@@ -389,7 +443,10 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
             }
         }
         if filled == 0 {
-            break;
+            eprintln!(
+                "dcfs: source ended at {offset} bytes but was {total} bytes when upload started; partial upload remains as {upload_name}"
+            );
+            return ExitCode::FAILURE;
         }
 
         // Retry a part rather than lose an upload that is hours in.
@@ -428,8 +485,58 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
     }
     eprintln!();
 
-    // Closing the file is what commits it.
+    if offset != total {
+        eprintln!(
+            "dcfs: source changed during upload; sent {offset} of the original {total} bytes and will not publish"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let current_size = match std::fs::metadata(local) {
+        Ok(meta) => meta.len(),
+        Err(e) => {
+            eprintln!(
+                "dcfs: cannot re-stat {path} before publication: {e}; partial upload remains as {upload_name}"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if current_size != total {
+        eprintln!(
+            "dcfs: source size changed during upload from {total} to {current_size} bytes; refusing publication"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // Sync first, then publish atomically under the requested name.
     match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/sync")))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) => {
+            eprintln!(
+                "dcfs: upload finished but sync returned HTTP {}",
+                resp.status()
+            );
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("dcfs: upload finished but sync failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let publish = serde_json::json!({
+        "new_parent_id": root_id,
+        "new_name": base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            name.as_bytes(),
+        ),
+        "idempotency_key": uuid::Uuid::new_v4().to_string(),
+    });
+    match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/publish")))
+        .json(&publish)
         .send()
         .await
     {
@@ -442,14 +549,35 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         }
         Ok(resp) => {
             eprintln!(
-                "dcfs: upload finished but sync returned HTTP {}",
+                "dcfs: upload synced but publishing {name} returned HTTP {}; partial upload remains as {upload_name}",
                 resp.status()
             );
             ExitCode::FAILURE
         }
         Err(e) => {
-            eprintln!("dcfs: upload finished but sync failed: {e}");
+            eprintln!(
+                "dcfs: upload synced but publishing {name} failed: {e}; partial upload remains as {upload_name}"
+            );
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod put_tests {
+    use super::{checked_resume_offset, next_read_len};
+
+    #[test]
+    fn resume_rejects_remote_larger_than_local_source() {
+        assert_eq!(checked_resume_offset(10, 10), Ok(10));
+        assert_eq!(checked_resume_offset(9, 10), Ok(9));
+        assert_eq!(checked_resume_offset(11, 10), Err(()));
+    }
+
+    #[test]
+    fn read_window_never_exceeds_initial_source_size() {
+        assert_eq!(next_read_len(10, 0, 8), 8);
+        assert_eq!(next_read_len(10, 8, 8), 2);
+        assert_eq!(next_read_len(10, 10, 8), 0);
     }
 }

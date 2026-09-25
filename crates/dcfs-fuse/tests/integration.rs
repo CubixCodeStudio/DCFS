@@ -4,7 +4,8 @@
 //! nested directories, and error cases using the fake client.
 
 use dcfs_core::NodeKind;
-use dcfs_fuse::client::ServerClient;
+use dcfs_fuse::client::{ClientError, ServerClient};
+use dcfs_fuse::service::{Fs, ROOT_INO};
 use dcfs_fuse::fake_client::FakeClient;
 use dcfs_protocol::{CreateNodeRequest, NameBytes, PatchNodeRequest, RenameNodeRequest};
 use uuid::Uuid;
@@ -120,6 +121,80 @@ async fn test_large_file_write_read() {
 
     let chunk2 = client.read_file(file.id, 500_000, 500_000).await.unwrap();
     assert_eq!(chunk2.len(), 500_000);
+}
+
+#[tokio::test]
+async fn test_short_read_at_large_offset_is_not_reported_as_eof() {
+    use std::sync::Arc;
+
+    // Exercise a 4-byte random read beyond 30 GB without allocating a huge file.
+    // The fake client advertises a sparse logical size while an empty backing Vec
+    // simulates a backend that unexpectedly returns short before logical EOF.
+    const LARGE_OFFSET: u64 = 30_155_428_536;
+
+    let client = Arc::new(FakeClient::new());
+    let root_id = FakeClient::root_id();
+    let file = create_file(client.as_ref(), root_id, b"large-file.bin").await;
+    client
+        .patch_node(
+            file.id,
+            PatchNodeRequest {
+                mode: None,
+                uid: None,
+                gid: None,
+                size: Some(LARGE_OFFSET + 4),
+                mtime: None,
+                atime: None,
+                idempotency_key: Uuid::new_v4(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fs = Fs::mount(client).await.unwrap();
+    let attr = fs.lookup(ROOT_INO, b"large-file.bin").await.unwrap();
+    let err = fs.read(attr.ino, LARGE_OFFSET, 4).await.unwrap_err();
+
+    match err {
+        ClientError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof),
+        other => panic!("expected UnexpectedEof, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_read_crossing_real_eof_is_still_a_normal_short_read() {
+    use std::sync::Arc;
+
+    let client = Arc::new(FakeClient::new());
+    let root_id = FakeClient::root_id();
+    let file = create_file(client.as_ref(), root_id, b"small-eof.bin").await;
+    client.write_file(file.id, 0, b"abc").await.unwrap();
+
+    let fs = Fs::mount(client).await.unwrap();
+    let attr = fs.lookup(ROOT_INO, b"small-eof.bin").await.unwrap();
+
+    // Only one byte exists from offset 2 to EOF. Asking for four must return
+    // that one byte rather than turning a legitimate EOF into EIO.
+    let data = fs.read(attr.ino, 2, 4).await.unwrap();
+    assert_eq!(data, b"c");
+}
+
+#[tokio::test]
+async fn test_read_after_local_write_refreshes_size_and_version() {
+    use std::sync::Arc;
+
+    let client = Arc::new(FakeClient::new());
+    let root_id = FakeClient::root_id();
+    create_file(client.as_ref(), root_id, b"read-after-write.bin").await;
+
+    let fs = Fs::mount(client).await.unwrap();
+    let attr = fs.lookup(ROOT_INO, b"read-after-write.bin").await.unwrap();
+    fs.write(attr.ino, 0, b"abc").await.unwrap();
+
+    // read() flushes the buffered write. It must then refresh the metadata
+    // remembered by lookup rather than treating the old zero-byte size as EOF.
+    let data = fs.read(attr.ino, 0, 3).await.unwrap();
+    assert_eq!(data, b"abc");
 }
 
 // ============================================================
