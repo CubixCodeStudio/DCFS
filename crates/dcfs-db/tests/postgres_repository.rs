@@ -123,6 +123,66 @@ async fn node_lifecycle_and_live_name_uniqueness() {
 }
 
 #[tokio::test]
+async fn publish_is_atomic_and_never_replaces() {
+    let Some((repo, pool, schema)) = setup().await else {
+        eprintln!("skipped: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let root = repo.get_root().await.unwrap();
+    let published = Uuid::new_v4();
+    repo.create_node(
+        published,
+        root.id,
+        b"published".to_vec(),
+        "file",
+        0o100644,
+        0,
+        0,
+    )
+    .await
+    .unwrap();
+    let temporary = Uuid::new_v4();
+    repo.create_node(
+        temporary,
+        root.id,
+        b".uploading".to_vec(),
+        "file",
+        0o100644,
+        0,
+        0,
+    )
+    .await
+    .unwrap();
+
+    let conflict = repo
+        .publish_node(temporary, root.id, b"published".to_vec())
+        .await;
+    assert!(
+        matches!(conflict, Err(RepositoryError::AlreadyExists)),
+        "{conflict:?}"
+    );
+    assert_eq!(
+        repo.get_node(published).await.unwrap().name,
+        b"published".to_vec()
+    );
+    assert_eq!(
+        repo.get_node(temporary).await.unwrap().name,
+        b".uploading".to_vec()
+    );
+
+    repo.publish_node(temporary, root.id, b"new-name".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_node(temporary).await.unwrap().name,
+        b"new-name".to_vec()
+    );
+
+    teardown(pool, schema).await;
+}
+
+#[tokio::test]
 async fn commit_is_atomic_and_conflicts_are_rejected() {
     let Some((repo, pool, schema)) = setup().await else {
         eprintln!("skipped: TEST_DATABASE_URL not set");

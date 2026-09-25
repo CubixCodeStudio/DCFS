@@ -430,6 +430,31 @@ impl MetadataRepository for PgRepository {
         Ok(())
     }
 
+    async fn publish_node(
+        &self,
+        id: Uuid,
+        new_parent_id: Uuid,
+        new_name: Vec<u8>,
+    ) -> Result<(), RepositoryError> {
+        // One UPDATE plus the live-name unique index makes publication atomic.
+        // A concurrent creator wins by causing PostgreSQL 23505, which db_err
+        // maps to AlreadyExists; no destination row is deleted.
+        let done = sqlx::query(
+            "UPDATE nodes SET parent_id = $2, name = $3, ctime = NOW()
+             WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .bind(new_parent_id)
+        .bind(new_name)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        if done.rows_affected() == 0 {
+            return Err(RepositoryError::NotFound);
+        }
+        Ok(())
+    }
+
     async fn update_node_attr(
         &self,
         id: Uuid,

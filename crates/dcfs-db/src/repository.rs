@@ -237,6 +237,18 @@ pub trait MetadataRepository: Send + Sync + 'static {
         new_name: Vec<u8>,
     ) -> Result<(), RepositoryError>;
 
+    /// Publish a node at a destination only if that name is still unused.
+    ///
+    /// Unlike POSIX rename this never replaces an existing destination. The
+    /// absence check and namespace move must be one atomic repository operation
+    /// so a concurrent creator cannot be overwritten between check and move.
+    async fn publish_node(
+        &self,
+        id: Uuid,
+        new_parent_id: Uuid,
+        new_name: Vec<u8>,
+    ) -> Result<(), RepositoryError>;
+
     /// Update node attributes.
     async fn update_node_attr(
         &self,
