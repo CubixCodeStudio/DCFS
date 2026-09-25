@@ -272,13 +272,19 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         }
     };
 
-    // Already there, or new?
-    let existing = auth(http.get(format!("{server}/api/v1/nodes/resolve")))
+    // Upload under a non-final name and publish by rename only after sync.
+    // Consumers may scan by filename while an upload is still in progress.
+    // Keep the destination hidden until every byte is synced and durable.
+    let upload_name = format!(".{name}.dcfs-uploading");
+
+    // Refuse to overwrite a completed destination. --resume is for the hidden
+    // upload entry only; the final name means publication already happened.
+    let final_existing = auth(http.get(format!("{server}/api/v1/nodes/resolve")))
         .query(&[("path", format!("/{name}"))])
         .send()
         .await;
-    let (node_id, mut offset) = match existing {
-        Ok(resp) if resp.status().is_success() => {
+    if let Ok(resp) = final_existing {
+        if resp.status().is_success() {
             let node: serde_json::Value = match resp.json().await {
                 Ok(node) => node,
                 Err(e) => {
@@ -286,16 +292,39 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            eprintln!(
+                "dcfs: {name} already exists ({} bytes); refusing to overwrite a published file",
+                node["size"].as_u64().unwrap_or(0)
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // Resume a hidden partial upload, or create one.
+    let existing = auth(http.get(format!("{server}/api/v1/nodes/resolve")))
+        .query(&[("path", format!("/{upload_name}"))])
+        .send()
+        .await;
+    let (node_id, root_id, mut offset) = match existing {
+        Ok(resp) if resp.status().is_success() => {
+            let node: serde_json::Value = match resp.json().await {
+                Ok(node) => node,
+                Err(e) => {
+                    eprintln!("dcfs: {upload_name} is there but unreadable: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             if !resume {
                 eprintln!(
-                    "dcfs: {name} already exists ({} bytes); pass --resume to carry on",
+                    "dcfs: partial upload {upload_name} already exists ({} bytes); pass --resume to carry on",
                     node["size"].as_u64().unwrap_or(0)
                 );
                 return ExitCode::FAILURE;
             }
             let id = node["id"].as_str().unwrap_or_default().to_string();
+            let parent = node["parent_id"].as_str().unwrap_or_default().to_string();
             let taken = node["size"].as_u64().unwrap_or(0).min(total);
-            (id, taken)
+            (id, parent, taken)
         }
         _ => {
             let root = match auth(http.get(format!("{server}/api/v1/nodes/root")))
@@ -318,7 +347,7 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
                 "parent_id": root,
                 "name": base64::Engine::encode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                    name.as_bytes(),
+                    upload_name.as_bytes(),
                 ),
                 "kind": "File",
                 "mode": 0o100644,
@@ -333,7 +362,11 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
             {
                 Ok(resp) if resp.status().is_success() => {
                     match resp.json::<serde_json::Value>().await {
-                        Ok(node) => (node["id"].as_str().unwrap_or_default().to_string(), 0),
+                        Ok(node) => (
+                            node["id"].as_str().unwrap_or_default().to_string(),
+                            root,
+                            0,
+                        ),
                         Err(e) => {
                             eprintln!("dcfs: cannot read the new file: {e}");
                             return ExitCode::FAILURE;
@@ -341,11 +374,11 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
                     }
                 }
                 Ok(resp) => {
-                    eprintln!("dcfs: cannot create {name}: HTTP {}", resp.status());
+                    eprintln!("dcfs: cannot create {upload_name}: HTTP {}", resp.status());
                     return ExitCode::FAILURE;
                 }
                 Err(e) => {
-                    eprintln!("dcfs: cannot create {name}: {e}");
+                    eprintln!("dcfs: cannot create {upload_name}: {e}");
                     return ExitCode::FAILURE;
                 }
             }
@@ -353,11 +386,9 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
     };
 
     if offset >= total && total > 0 {
-        eprintln!("{name}: already complete ({total} bytes)");
-        return ExitCode::SUCCESS;
-    }
-    if offset > 0 {
-        eprintln!("{name}: resuming at {offset} of {total} bytes");
+        eprintln!("{upload_name}: already uploaded ({total} bytes); publishing");
+    } else if offset > 0 {
+        eprintln!("{upload_name}: resuming at {offset} of {total} bytes");
     }
 
     use std::io::{Read, Seek};
@@ -428,8 +459,35 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
     }
     eprintln!();
 
-    // Closing the file is what commits it.
+    // Sync first, then publish atomically under the requested name.
     match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/sync")))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) => {
+            eprintln!(
+                "dcfs: upload finished but sync returned HTTP {}",
+                resp.status()
+            );
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("dcfs: upload finished but sync failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let rename = serde_json::json!({
+        "new_parent_id": root_id,
+        "new_name": base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            name.as_bytes(),
+        ),
+        "idempotency_key": uuid::Uuid::new_v4().to_string(),
+    });
+    match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/rename")))
+        .json(&rename)
         .send()
         .await
     {
@@ -442,13 +500,15 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         }
         Ok(resp) => {
             eprintln!(
-                "dcfs: upload finished but sync returned HTTP {}",
+                "dcfs: upload synced but publishing {name} returned HTTP {}; partial upload remains as {upload_name}",
                 resp.status()
             );
             ExitCode::FAILURE
         }
         Err(e) => {
-            eprintln!("dcfs: upload finished but sync failed: {e}");
+            eprintln!(
+                "dcfs: upload synced but publishing {name} failed: {e}; partial upload remains as {upload_name}"
+            );
             ExitCode::FAILURE
         }
     }
