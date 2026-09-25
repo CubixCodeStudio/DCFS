@@ -494,6 +494,22 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let current_size = match std::fs::metadata(local) {
+        Ok(meta) => meta.len(),
+        Err(e) => {
+            eprintln!(
+                "dcfs: cannot re-stat {path} before publication: {e}; partial upload remains as {upload_name}"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if current_size != total {
+        eprintln!(
+            "dcfs: source size changed during upload from {total} to {current_size} bytes; refusing publication"
+        );
+        return ExitCode::FAILURE;
+    }
+
     // Sync first, then publish atomically under the requested name.
     match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/sync")))
         .send()
@@ -513,7 +529,7 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         }
     }
 
-    let rename = serde_json::json!({
+    let publish = serde_json::json!({
         "new_parent_id": root_id,
         "new_name": base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -522,7 +538,7 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         "idempotency_key": uuid::Uuid::new_v4().to_string(),
     });
     match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/publish")))
-        .json(&rename)
+        .json(&publish)
         .send()
         .await
     {
