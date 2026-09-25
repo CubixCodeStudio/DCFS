@@ -495,7 +495,10 @@ impl<C: ServerClient> Fs<C> {
             inodes
                 .seen
                 .insert(ino, (node.current_version_id, node.size));
-            inodes.high_water.remove(&ino);
+            // Keep high_water: it is also the filesystem's record of locally
+            // accepted size and may have been advanced by a concurrent write.
+            // Files written through this mount therefore refresh metadata on
+            // reads instead of risking a stale version cache key.
             (node.current_version_id, node.size)
         } else {
             remembered.expect("checked above")
