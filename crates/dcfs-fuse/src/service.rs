@@ -37,7 +37,6 @@ const STATFS_NOMINAL_BYTES: u64 = 1024 * 1024 * 1024 * 1024 * 1024;
 /// decrypting and re-encrypting them to merge a few bytes in.
 const WRITE_BUFFER_BYTES: u64 = 4 * 1024 * 1024;
 
-
 /// A read that stops before the file's logical EOF is not EOF. Reporting it
 /// as such makes callers accept a truncated view of an otherwise larger file.
 fn short_read_error(offset: u64, expected: u64, got: usize, file_size: u64) -> ClientError {

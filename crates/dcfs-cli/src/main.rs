@@ -198,9 +198,7 @@ fn checked_resume_offset(remote_size: u64, local_size: u64) -> Result<u64, ()> {
 }
 
 fn next_read_len(total: u64, offset: u64, capacity: usize) -> usize {
-    total
-        .saturating_sub(offset)
-        .min(capacity as u64) as usize
+    total.saturating_sub(offset).min(capacity as u64) as usize
 }
 
 /// Upload a local file, sending only what the server does not already have.
