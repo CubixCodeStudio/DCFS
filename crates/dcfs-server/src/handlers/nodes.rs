@@ -136,6 +136,24 @@ pub async fn rename_node(
     Ok(Json(node_to_response(node)))
 }
 
+/// Publish a node without replacing an existing destination.
+///
+/// Upload clients need an atomic "move if absent" primitive so a concurrent
+/// creator cannot be lost between a preflight check and the namespace move.
+pub async fn publish_node(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<RenameNodeRequest>,
+) -> Result<Json<NodeResponse>, AppError> {
+    let new_name = req.new_name.to_name()?;
+    state
+        .repo
+        .publish_node(id, req.new_parent_id, new_name.into_bytes())
+        .await?;
+    let node = state.repo.get_node(id).await?;
+    Ok(Json(node_to_response(node)))
+}
+
 /// Resolve one name inside a directory.
 ///
 /// `name` is unpadded base64url, like every other filename on the wire, which

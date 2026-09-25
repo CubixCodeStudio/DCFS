@@ -187,6 +187,61 @@ async fn rename_is_metadata_only() {
 }
 
 #[tokio::test]
+async fn publish_never_replaces_an_existing_destination() {
+    let router = create_server();
+    let (_, root) = send(&router, "GET", "/api/v1/nodes/root", None).await;
+    let root_id = root["id"].as_str().unwrap();
+
+    let published = create(&router, root_id, b"published", "File").await;
+    let temporary = create(&router, root_id, b".uploading", "File").await;
+
+    let (status, body) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/nodes/{temporary}/publish"),
+        Some(json!({
+            "new_parent_id": root_id,
+            "new_name": name(b"published"),
+            "idempotency_key": key(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    let (_, kept) = send(
+        &router,
+        "GET",
+        &format!("/api/v1/nodes/{published}"),
+        None,
+    )
+    .await;
+    assert_eq!(kept["name"], name(b"published"));
+
+    let (_, partial) = send(
+        &router,
+        "GET",
+        &format!("/api/v1/nodes/{temporary}"),
+        None,
+    )
+    .await;
+    assert_eq!(partial["name"], name(b".uploading"));
+
+    let (status, body) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/nodes/{temporary}/publish"),
+        Some(json!({
+            "new_parent_id": root_id,
+            "new_name": name(b"new-name"),
+            "idempotency_key": key(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], name(b"new-name"));
+}
+
+#[tokio::test]
 async fn rename_to_an_invalid_name_is_rejected() {
     let router = create_server();
     let (_, root) = send(&router, "GET", "/api/v1/nodes/root", None).await;

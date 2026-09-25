@@ -486,7 +486,7 @@ async fn put(mut args: impl Iterator<Item = String>) -> ExitCode {
         ),
         "idempotency_key": uuid::Uuid::new_v4().to_string(),
     });
-    match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/rename")))
+    match auth(http.post(format!("{server}/api/v1/nodes/{node_id}/publish")))
         .json(&rename)
         .send()
         .await
