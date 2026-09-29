@@ -4,6 +4,8 @@
 //! switch `nodes.current_version_id`, and it does so inside a transaction that
 //! locks the node row.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
@@ -67,6 +69,15 @@ impl PgRepository {
         let schema = schema.to_string();
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
+            // A pooler in front of Postgres (pgDog, pgbouncer) can hand back a
+            // connection whose backend has gone away, and a proxied backend can
+            // sit behind a slow link. Without these, a dead connection stays in
+            // the pool and every acquire on a busy pool fails after the 30s
+            // default with no second chance.
+            .acquire_timeout(Duration::from_secs(60))
+            .idle_timeout(Some(Duration::from_secs(300)))
+            .max_lifetime(Some(Duration::from_secs(1800)))
+            .test_before_acquire(true)
             .after_connect(move |conn, _| {
                 let schema = schema.clone();
                 Box::pin(async move {
@@ -183,6 +194,61 @@ fn db_err(e: sqlx::Error) -> RepositoryError {
         }
         _ => RepositoryError::Database(e.to_string()),
     }
+}
+
+/// How many times a transient failure is retried before it is reported.
+const MAX_ATTEMPTS: u32 = 4;
+
+/// Whether an error is worth trying again: the query never ran to completion,
+/// so re-running it cannot double any effect.
+///
+/// The read-only case matters behind a read/write splitting pooler such as
+/// pgDog: a write routed to a replica fails with 25006, and the next attempt
+/// may land on the primary.
+fn is_transient(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_) => true,
+        sqlx::Error::Database(dbe) => matches!(
+            dbe.code().as_deref(),
+            Some(
+                "40001"     // serialization_failure
+                | "40P01"   // deadlock_detected
+                | "57014"   // query_canceled - incl. conflict with recovery
+                | "25006"   // read_only_sql_transaction - routed to a replica
+                | "53300"   // too_many_connections
+                | "08000" | "08003" | "08006" | "08001" | "08004" // connection_exception
+            )
+        ),
+        _ => false,
+    }
+}
+
+/// Run `op` until it succeeds, fails for a non-transient reason, or runs out
+/// of attempts. Backoff doubles from 250 ms.
+async fn retrying<T, F, Fut>(mut op: F) -> Result<T, RepositoryError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    let mut delay = Duration::from_millis(250);
+    for attempt in 1..=MAX_ATTEMPTS {
+        match op().await {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < MAX_ATTEMPTS && is_transient(&e) => {
+                tracing::warn!(
+                    attempt,
+                    max = MAX_ATTEMPTS,
+                    delay_ms = delay.as_millis() as u64,
+                    error = %e,
+                    "transient database error, retrying"
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(e) => return Err(db_err(e)),
+        }
+    }
+    unreachable!("loop returns on the last attempt")
 }
 
 fn node_from_row(row: &PgRow) -> NodeRecord {
@@ -534,22 +600,50 @@ impl MetadataRepository for PgRepository {
         // Session-scoped, not transaction-scoped: the work it guards writes
         // objects to a remote store between queries, which has no business
         // inside a database transaction.
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(advisory_key(node_id))
-            .execute(&mut *conn)
-            .await
-            .map_err(db_err)?;
+        // Retried inline rather than through `retrying`: the borrow of `conn`
+        // cannot escape an `FnMut` closure, and the lock has to be taken on the
+        // same connection the guard then holds.
+        let key = advisory_key(node_id);
+        let mut delay = Duration::from_millis(250);
+        for attempt in 1..=MAX_ATTEMPTS {
+            match sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(key)
+                .execute(&mut *conn)
+                .await
+            {
+                Ok(_) => break,
+                Err(e) if attempt < MAX_ATTEMPTS && is_transient(&e) => {
+                    tracing::warn!(attempt, error = %e, "advisory lock failed, retrying");
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => return Err(db_err(e)),
+            }
+        }
         Ok(NodeGuard::holding(conn))
     }
 
     async fn try_lock_gc(&self) -> Result<Option<NodeGuard>, RepositoryError> {
         let mut conn = self.pool.acquire().await.map_err(db_err)?;
-        let taken: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1, $2)")
-            .bind(GC_LOCK.0)
-            .bind(GC_LOCK.1)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(db_err)?;
+        let mut delay = Duration::from_millis(250);
+        let mut attempt = 1;
+        let taken: bool = loop {
+            match sqlx::query_scalar("SELECT pg_try_advisory_lock($1, $2)")
+                .bind(GC_LOCK.0)
+                .bind(GC_LOCK.1)
+                .fetch_one(&mut *conn)
+                .await
+            {
+                Ok(v) => break v,
+                Err(e) if attempt < MAX_ATTEMPTS && is_transient(&e) => {
+                    tracing::warn!(attempt, error = %e, "gc lock failed, retrying");
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                    attempt += 1;
+                }
+                Err(e) => return Err(db_err(e)),
+            }
+        };
         Ok(taken.then(|| NodeGuard::holding(conn)))
     }
 
@@ -557,16 +651,19 @@ impl MetadataRepository for PgRepository {
         &self,
         node_id: Uuid,
     ) -> Result<FileVersionRecord, RepositoryError> {
-        let row = sqlx::query(&format!(
+        // Read-your-own-write: a read/write splitting pooler can send this to
+        // a replica that has not replayed the INSERT yet, so a miss here is
+        // worth one more look before it becomes NotFound.
+        // format! builds a temporary the query would borrow, so it has to
+        // outlive the closure the retry loop calls more than once.
+        let sql = format!(
             "SELECT {VERSION_COLUMNS} FROM file_versions
              WHERE node_id = $1 AND state = 'staging'
              ORDER BY created_at DESC LIMIT 1"
-        ))
-        .bind(node_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?
-        .ok_or(RepositoryError::NotFound)?;
+        );
+        let row = retrying(|| sqlx::query(&sql).bind(node_id).fetch_optional(&self.pool))
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
         Ok(version_from_row(&row))
     }
 
@@ -930,8 +1027,9 @@ impl MetadataRepository for PgRepository {
         // or objects carried over from the node's current version — which is
         // live — so a version staged while this runs cannot lose an object to
         // it.
-        let rows: Vec<Uuid> = sqlx::query_scalar(
-            "WITH live AS (
+        let rows: Vec<Uuid> = retrying(|| {
+            sqlx::query_scalar(
+                "WITH live AS (
                  SELECT v.id
                  FROM file_versions v
                  JOIN nodes n ON n.id = v.node_id
@@ -955,12 +1053,12 @@ impl MetadataRepository for PgRepository {
                      AND other.version_id IN (SELECT id FROM live)
                )
              LIMIT $2",
-        )
-        .bind(older_than)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+            )
+            .bind(older_than)
+            .bind(limit)
+            .fetch_all(&self.pool)
+        })
+        .await?;
         Ok(rows)
     }
 
