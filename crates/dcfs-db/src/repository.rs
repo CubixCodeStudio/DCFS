@@ -75,16 +75,37 @@ pub struct FileChunkRecord {
 pub struct NodeGuard {
     /// None for a store that is already confined to one process.
     conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+    /// Held, not read: dropping it is what releases a process-local lock.
+    _local: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 impl NodeGuard {
     /// A guard over a store that needs no lock beyond the process it runs in.
     pub fn unlocked() -> Self {
-        Self { conn: None }
+        Self {
+            conn: None,
+            _local: None,
+        }
     }
 
     pub fn holding(conn: sqlx::pool::PoolConnection<sqlx::Postgres>) -> Self {
-        Self { conn: Some(conn) }
+        Self {
+            conn: Some(conn),
+            _local: None,
+        }
+    }
+
+    /// A guard backed by an in-process mutex rather than a database lock.
+    ///
+    /// Enough when one server owns its database: the writers to serialise are
+    /// all in this process. It also survives a connection pooler in
+    /// transaction mode, which hands the same client different server
+    /// connections and so cannot carry a session-scoped advisory lock.
+    pub fn holding_local(guard: tokio::sync::OwnedMutexGuard<()>) -> Self {
+        Self {
+            conn: None,
+            _local: Some(guard),
+        }
     }
 }
 

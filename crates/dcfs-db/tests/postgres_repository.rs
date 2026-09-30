@@ -302,7 +302,9 @@ async fn installs_into_a_named_schema_without_touching_anything_else() {
     .unwrap();
 
     // DCFS installs itself into its own schema.
-    let repo = PgRepository::connect(&url, 2, &schema).await.unwrap();
+    let repo = PgRepository::connect(&url, 2, &schema, false)
+        .await
+        .unwrap();
     assert!(
         !repo.missing_tables().await.unwrap().is_empty(),
         "nothing is installed yet"
@@ -365,7 +367,7 @@ async fn a_hostile_schema_name_never_reaches_sql() {
         "1leading_digit",
     ] {
         assert!(
-            PgRepository::connect(&url, 1, bad).await.is_err(),
+            PgRepository::connect(&url, 1, bad, false).await.is_err(),
             "{bad:?} must be rejected"
         );
     }

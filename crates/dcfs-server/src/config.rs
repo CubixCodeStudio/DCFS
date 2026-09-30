@@ -71,6 +71,15 @@ pub struct Config {
     /// Install the schema at startup if it is missing. Off by default: the
     /// target may be someone else's database.
     pub database_auto_migrate: bool,
+    /// This server is the only one using its database, so the per-node write
+    /// lock can be an in-process mutex rather than a database advisory lock.
+    ///
+    /// Off by default, because the safe answer when several servers share a
+    /// database is the lock the database hands out. Turn it on for a single
+    /// server, and turn it on when a connection pooler sits in front in
+    /// transaction mode: it gives one client different server connections, so
+    /// a session-scoped advisory lock is taken on one and released on another.
+    pub single_instance: bool,
     /// Directory holding encrypted chunks.
     pub object_store_path: Option<std::path::PathBuf>,
     pub chunk_size: u64,
@@ -179,6 +188,18 @@ impl Config {
             }
         };
 
+        let single_instance = match optional_var("SINGLE_INSTANCE")?.as_deref() {
+            None => false,
+            Some("true" | "1" | "yes") => true,
+            Some("false" | "0" | "no") => false,
+            Some(other) => {
+                return Err(ConfigError::Invalid {
+                    var: "SINGLE_INSTANCE",
+                    reason: format!("expected true or false, got {other:?}"),
+                })
+            }
+        };
+
         let object_store_path = optional_var("OBJECT_STORE_PATH")?.map(std::path::PathBuf::from);
 
         let chunk_size = match optional_var("CHUNK_SIZE")? {
@@ -242,6 +263,7 @@ impl Config {
             server_addr,
             database_schema,
             database_auto_migrate,
+            single_instance,
             object_store_path,
             chunk_size,
             max_attachment_bytes,
@@ -305,6 +327,7 @@ mod tests {
             server_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
             database_schema: "public".to_string(),
             database_auto_migrate: false,
+            single_instance: false,
             object_store_path: None,
             chunk_size: DEFAULT_CHUNK_SIZE,
             max_attachment_bytes: None,
@@ -347,6 +370,24 @@ mod tests {
             })
         ));
         env::remove_var("DATABASE_AUTO_MIGRATE");
+
+        // SINGLE_INSTANCE decides whether the write lock is the databases or
+        // this processs, so a typo has to be refused rather than read as off.
+        env::set_var("SINGLE_INSTANCE", "maybe");
+        assert!(matches!(
+            Config::from_env(),
+            Err(ConfigError::Invalid {
+                var: "SINGLE_INSTANCE",
+                ..
+            })
+        ));
+        env::set_var("SINGLE_INSTANCE", "yes");
+        assert!(Config::from_env().unwrap().single_instance);
+        env::remove_var("SINGLE_INSTANCE");
+        assert!(
+            !Config::from_env().unwrap().single_instance,
+            "the database lock is the safe default"
+        );
 
         // A chunk must still fit once sealed.
         env::set_var("CHUNK_SIZE", "4096");

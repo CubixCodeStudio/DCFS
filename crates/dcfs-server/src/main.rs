@@ -128,7 +128,9 @@ async fn open_postgres(url: &str, config: &Config) -> PgRepository {
     // SQLx errors can echo the DSN back, so strip it before logging.
     let redact = |e: String| e.replace(url, "<DATABASE_URL>");
 
-    let repo = match PgRepository::connect(url, 16, &config.database_schema).await {
+    let repo = match PgRepository::connect(url, 16, &config.database_schema, config.single_instance)
+        .await
+    {
         Ok(repo) => repo,
         Err(e) => {
             tracing::error!("cannot connect to DATABASE_URL: {}", redact(e.to_string()));

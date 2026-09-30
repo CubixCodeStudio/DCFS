@@ -4,6 +4,8 @@
 //! switch `nodes.current_version_id`, and it does so inside a transaction that
 //! locks the node row.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -17,9 +19,31 @@ use crate::{
     NodeRecord, ObjectLocatorRecord, RepositoryError, SessionRecord, GC_LOCK, MIGRATIONS,
 };
 
+/// Locks held in this process instead of in the database.
+///
+/// One mutex per node, created on first use. Entries whose only reference is
+/// the map itself are dropped on the next insert, so the map tracks the nodes
+/// being written rather than every node ever written.
+#[derive(Default)]
+struct LocalLocks {
+    nodes: std::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
+    gc: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl LocalLocks {
+    fn node(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.nodes.lock().expect("local lock map poisoned");
+        map.retain(|_, m| Arc::strong_count(m) > 1);
+        map.entry(id).or_default().clone()
+    }
+}
+
 /// PostgreSQL-backed metadata repository.
 pub struct PgRepository {
     pool: PgPool,
+    /// `Some` when this server owns its database, so the write lock does not
+    /// have to be one the database hands out. See [`PgRepository::connect`].
+    local_locks: Option<Arc<LocalLocks>>,
 }
 
 /// The tables DCFS needs. Used to tell "not installed yet" apart from
@@ -60,10 +84,15 @@ impl PgRepository {
     /// without colliding with them. This neither creates the schema nor
     /// installs tables: see [`PgRepository::migrate`] and
     /// [`PgRepository::missing_tables`].
+    /// `single_instance` says this server is the only one using its database,
+    /// so writers can be serialised with an in-process mutex instead of a
+    /// database advisory lock. Leave it false when several servers share one
+    /// database: only a lock the database hands out covers all of them.
     pub async fn connect(
         database_url: &str,
         max_connections: u32,
         schema: &str,
+        single_instance: bool,
     ) -> Result<Self, RepositoryError> {
         validate_schema_name(schema)?;
         let schema = schema.to_string();
@@ -91,12 +120,18 @@ impl PgRepository {
             .connect(database_url)
             .await
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            local_locks: single_instance.then(|| Arc::new(LocalLocks::default())),
+        })
     }
 
     /// Wrap an existing pool (tests, shared pools).
     pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            local_locks: None,
+        }
     }
 
     /// Which of the required tables are not reachable on the current
@@ -596,6 +631,11 @@ impl MetadataRepository for PgRepository {
     }
 
     async fn lock_node(&self, node_id: Uuid) -> Result<NodeGuard, RepositoryError> {
+        if let Some(locks) = &self.local_locks {
+            return Ok(NodeGuard::holding_local(
+                locks.node(node_id).lock_owned().await,
+            ));
+        }
         let mut conn = self.pool.acquire().await.map_err(db_err)?;
         // Session-scoped, not transaction-scoped: the work it guards writes
         // objects to a remote store between queries, which has no business
@@ -624,6 +664,14 @@ impl MetadataRepository for PgRepository {
     }
 
     async fn try_lock_gc(&self) -> Result<Option<NodeGuard>, RepositoryError> {
+        if let Some(locks) = &self.local_locks {
+            return Ok(locks
+                .gc
+                .clone()
+                .try_lock_owned()
+                .ok()
+                .map(NodeGuard::holding_local));
+        }
         let mut conn = self.pool.acquire().await.map_err(db_err)?;
         let mut delay = Duration::from_millis(250);
         let mut attempt = 1;
