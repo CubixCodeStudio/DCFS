@@ -23,6 +23,9 @@ pub struct AppState {
     pub key_id: KeyId,
     /// Chunk payload size for new versions.
     pub chunk_size: u64,
+    /// How many of a read's parts to fetch at once. See
+    /// `Config::parallel_chunk_fetches`.
+    pub parallel_chunk_fetches: usize,
     /// Shared bearer token. `None` disables the check and is only reachable
     /// from tests; the binary refuses to start without one.
     pub api_token: Option<Arc<String>>,
@@ -53,6 +56,7 @@ impl AppState {
             key: Arc::new(EncryptionKey::from_bytes(master_key)),
             key_id: KeyId::new("master"),
             chunk_size,
+            parallel_chunk_fetches: 8,
             api_token: None,
             write_locks: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -67,6 +71,12 @@ impl AppState {
             locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         }
         locks.entry(node_id).or_default().clone()
+    }
+
+    /// How many of a read's parts to fetch at once.
+    pub fn with_parallel_chunk_fetches(mut self, n: usize) -> Self {
+        self.parallel_chunk_fetches = n.max(1);
+        self
     }
 
     /// Require this bearer token on every non-health request.

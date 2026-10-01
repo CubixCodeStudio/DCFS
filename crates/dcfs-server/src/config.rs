@@ -80,6 +80,20 @@ pub struct Config {
     /// transaction mode: it gives one client different server connections, so
     /// a session-scoped advisory lock is taken on one and released on another.
     pub single_instance: bool,
+    /// How many of a read's parts to fetch from the object store at once.
+    ///
+    /// A read spanning several chunks costs the sum of their round trips
+    /// rather than the slowest one when fetched serially. Over Discord, where
+    /// a part is a network round trip, raising this is what makes a wide read
+    /// fast; over a local directory it buys nothing.
+    pub parallel_chunk_fetches: usize,
+    /// Requests in flight per Discord webhook.
+    ///
+    /// Rate-limit headers describe what has already happened, so too many
+    /// parallel requests all read the same "plenty left" state, arrive
+    /// together and turn into a 429 storm. Raise it a step at a time, and add
+    /// webhooks instead once one bucket is the limit: each has its own.
+    pub discord_max_concurrency: usize,
     /// Directory holding encrypted chunks.
     pub object_store_path: Option<std::path::PathBuf>,
     pub chunk_size: u64,
@@ -200,6 +214,9 @@ impl Config {
             }
         };
 
+        let parallel_chunk_fetches = positive_var("PARALLEL_CHUNK_FETCHES", 8)?;
+        let discord_max_concurrency = positive_var("DISCORD_MAX_CONCURRENCY", 4)?;
+
         let object_store_path = optional_var("OBJECT_STORE_PATH")?.map(std::path::PathBuf::from);
 
         let chunk_size = match optional_var("CHUNK_SIZE")? {
@@ -264,6 +281,8 @@ impl Config {
             database_schema,
             database_auto_migrate,
             single_instance,
+            parallel_chunk_fetches,
+            discord_max_concurrency,
             object_store_path,
             chunk_size,
             max_attachment_bytes,
@@ -273,6 +292,25 @@ impl Config {
 }
 
 /// Empty and unset are the same thing, so a blank line in `.env` is not a value.
+/// A count that has to be at least one: zero would stall the work it bounds
+/// rather than slow it down, which is a worse failure than a typo.
+fn positive_var(var: &'static str, default: usize) -> Result<usize, ConfigError> {
+    let Some(raw) = optional_var(var)? else {
+        return Ok(default);
+    };
+    let n: usize = raw.parse().map_err(|e| ConfigError::Invalid {
+        var,
+        reason: format!("{raw:?}: {e}"),
+    })?;
+    if n == 0 {
+        return Err(ConfigError::Invalid {
+            var,
+            reason: "expected at least 1".to_string(),
+        });
+    }
+    Ok(n)
+}
+
 fn optional_var(var: &'static str) -> Result<Option<String>, ConfigError> {
     match env::var(var) {
         Ok(v) if v.trim().is_empty() => Ok(None),
@@ -328,6 +366,8 @@ mod tests {
             database_schema: "public".to_string(),
             database_auto_migrate: false,
             single_instance: false,
+            parallel_chunk_fetches: 8,
+            discord_max_concurrency: 4,
             object_store_path: None,
             chunk_size: DEFAULT_CHUNK_SIZE,
             max_attachment_bytes: None,

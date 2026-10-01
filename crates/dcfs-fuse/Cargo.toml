@@ -18,6 +18,7 @@ dcfs-core = { workspace = true }
 dcfs-protocol = { workspace = true }
 dcfs-cache = { workspace = true }
 tokio = { workspace = true }
+futures-util = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

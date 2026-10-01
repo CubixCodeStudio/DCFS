@@ -40,12 +40,6 @@ const UNCOMMITTED_HEADERS: [(&str, &str); 1] = [(COMMITTED_HEADER, "false")];
 /// a staging version looking abandoned for longer. 1 GiB is a compromise.
 const COMMIT_EVERY_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// How many of a read's parts to fetch at once.
-///
-/// ponytail: a fixed cap, not a tuned pool. Raise it if a backend's latency
-/// dominates and it can take the concurrency.
-const MAX_PARALLEL_CHUNK_FETCHES: usize = 8;
-
 #[derive(Debug, Deserialize)]
 pub struct ReadQuery {
     pub offset: Option<u64>,
@@ -233,7 +227,7 @@ pub async fn read_bytes(
     let mut next = first;
 
     while next <= last || !inflight.is_empty() {
-        while next <= last && inflight.len() < MAX_PARALLEL_CHUNK_FETCHES {
+        while next <= last && inflight.len() < state.parallel_chunk_fetches {
             let chunk_start = next * chunk_size;
             let want_from = offset.saturating_sub(chunk_start) as usize;
             let want_to = ((offset + size).min(chunk_start + chunk_size) - chunk_start) as usize;

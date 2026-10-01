@@ -669,6 +669,7 @@ dependencies = [
  "dcfs-core",
  "dcfs-protocol",
  "fuser",
+ "futures-util",
  "libc",
  "mockito",
  "parking_lot",

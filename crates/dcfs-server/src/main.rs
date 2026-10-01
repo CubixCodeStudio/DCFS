@@ -66,7 +66,12 @@ async fn main() {
         let clients: Vec<DiscordClient> = config
             .discord_webhooks
             .iter()
-            .map(|(id, token)| DiscordClient::new(DiscordClientConfig::new(id, token.expose())))
+            .map(|(id, token)| {
+                DiscordClient::new(
+                    DiscordClientConfig::new(id, token.expose())
+                        .with_max_concurrency(config.discord_max_concurrency),
+                )
+            })
             .collect();
         // Locators live in the metadata store, so an attachment can still be
         // found after a restart — and which webhook holds it is recorded with
@@ -91,6 +96,7 @@ async fn main() {
     };
 
     let state = AppState::new(repo.clone(), store.clone(), master_key, config.chunk_size)
+        .with_parallel_chunk_fetches(config.parallel_chunk_fetches)
         .with_api_token(api_token.expose());
 
     // Sweep often enough that space comes back in a reasonable time, but never

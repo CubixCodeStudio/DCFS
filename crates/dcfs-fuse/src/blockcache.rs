@@ -14,6 +14,7 @@
 //! decryption happens on the server — so the cache directory holds readable
 //! file contents and must be protected like the files themselves.
 
+use futures_util::stream::{self, StreamExt};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,6 +22,12 @@ use uuid::Uuid;
 
 /// How much of a file one cached block holds.
 pub const BLOCK_SIZE: u64 = 1024 * 1024;
+
+/// How many missing blocks one read fetches at once.
+///
+/// ponytail: a fixed cap. The server bounds its own fan-out to the object
+/// store, so this only has to be wide enough to keep that bound busy.
+const MAX_PARALLEL_BLOCK_FETCHES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -109,33 +116,66 @@ impl BlockCache {
             return Ok(Vec::new());
         }
 
-        let mut out = Vec::with_capacity(size as usize);
         let first = offset / BLOCK_SIZE;
         let last = (offset + size - 1) / BLOCK_SIZE;
 
+        // Cache first, and all of it: a hit costs nothing, and knowing which
+        // blocks are missing is what lets the misses go out together.
+        let mut blocks: Vec<Option<Vec<u8>>> = Vec::with_capacity((last - first + 1) as usize);
         for index in first..=last {
-            let key = Key {
-                node_id,
-                version_id,
-                index,
-            };
-            let block_start = index * BLOCK_SIZE;
+            blocks.push(
+                self.load(&Key {
+                    node_id,
+                    version_id,
+                    index,
+                })
+                .await,
+            );
+        }
 
-            let block = match self.load(&key).await {
-                Some(bytes) => bytes,
-                None => {
-                    // The fetch says whether this block came from something
-                    // immutable. Bytes from a write still in progress are
-                    // served but never kept: the same key would otherwise go
-                    // on returning content the file may never end up holding.
-                    let (bytes, keepable) = fetch(block_start, BLOCK_SIZE).await?;
-                    if keepable {
-                        self.store(&key, &bytes).await;
-                    }
-                    bytes
-                }
-            };
+        // Fetch the misses at the same time. Over a backend where a block is a
+        // network round trip, serial fetches make a read as slow as the sum of
+        // its blocks rather than the slowest of them.
+        let misses = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| block.is_none())
+            .map(|(slot, _)| slot)
+            .collect::<Vec<_>>();
+        let fetched: Vec<(usize, Result<(Vec<u8>, bool), E>)> = stream::iter(misses)
+            .map(|slot| {
+                let block_start = (first + slot as u64) * BLOCK_SIZE;
+                let fetch = &fetch;
+                async move { (slot, fetch(block_start, BLOCK_SIZE).await) }
+            })
+            .buffer_unordered(MAX_PARALLEL_BLOCK_FETCHES)
+            .collect()
+            .await;
 
+        for (slot, result) in fetched {
+            // The fetch says whether this block came from something immutable.
+            // Bytes from a write still in progress are served but never kept:
+            // the same key would otherwise go on returning content the file may
+            // never end up holding.
+            let (bytes, keepable) = result?;
+            if keepable {
+                self.store(
+                    &Key {
+                        node_id,
+                        version_id,
+                        index: first + slot as u64,
+                    },
+                    &bytes,
+                )
+                .await;
+            }
+            blocks[slot] = Some(bytes);
+        }
+
+        let mut out = Vec::with_capacity(size as usize);
+        for (slot, block) in blocks.into_iter().enumerate() {
+            let block = block.expect("every block is either loaded or fetched");
+            let block_start = (first + slot as u64) * BLOCK_SIZE;
             // Clamp the wanted window to what this block actually holds; a
             // short block means end of file.
             let from = offset.saturating_sub(block_start).min(block.len() as u64);
@@ -361,6 +401,46 @@ mod tests {
         let want: Vec<u8> = (start..start + 20).map(|i| (i % 251) as u8).collect();
         assert_eq!(got, want);
         assert_eq!(calls.load(Ordering::SeqCst), 2, "two blocks touched");
+
+        cache.discard().await;
+    }
+
+    #[tokio::test]
+    async fn the_blocks_one_read_is_missing_are_fetched_together() {
+        // Serial fetches cost the sum of their round trips. Over a network
+        // backend that is the whole difference, and nothing else in the read
+        // path would notice if the concurrency were lost.
+        let cache = temp_cache(Mode::Mirror).await;
+        let (node, version) = (Uuid::new_v4(), Uuid::new_v4());
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let fetch = {
+            let inflight = inflight.clone();
+            let peak = peak.clone();
+            move |offset: u64, len: u64| {
+                let inflight = inflight.clone();
+                let peak = peak.clone();
+                async move {
+                    let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    let bytes: Vec<u8> = (offset..offset + len).map(|i| (i % 251) as u8).collect();
+                    Ok::<_, std::convert::Infallible>((bytes, true))
+                }
+            }
+        };
+
+        let got = cache
+            .read(node, version, 0, BLOCK_SIZE * 4, &fetch)
+            .await
+            .unwrap();
+        assert_eq!(got.len() as u64, BLOCK_SIZE * 4);
+        assert!(
+            peak.load(Ordering::SeqCst) > 1,
+            "four missing blocks went out one at a time"
+        );
 
         cache.discard().await;
     }
