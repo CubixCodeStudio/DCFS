@@ -141,11 +141,12 @@ impl PgRepository {
         for table in REQUIRED_TABLES {
             // to_regclass resolves through search_path and returns NULL rather
             // than erroring when the table does not exist.
-            let found: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
-                .bind(table)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(db_err)?;
+            let found: Option<String> = retrying(|| {
+                sqlx::query_scalar("SELECT to_regclass($1)::text")
+                    .bind(table)
+                    .fetch_one(&self.pool)
+            })
+            .await?;
             if found.is_none() {
                 missing.push(table);
             }
@@ -157,10 +158,10 @@ impl PgRepository {
     /// everything in it is left alone.
     pub async fn ensure_schema(&self, schema: &str) -> Result<(), RepositoryError> {
         validate_schema_name(schema)?;
-        sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
+        // Built once outside the closure: the query borrows it, and the retry
+        // loop calls the closure more than once.
+        let sql = format!("CREATE SCHEMA IF NOT EXISTS {schema}");
+        retrying(|| sqlx::query(&sql).execute(&self.pool)).await?;
         Ok(())
     }
 
@@ -171,12 +172,13 @@ impl PgRepository {
     /// running it against a database that already has the tables, or that holds
     /// unrelated tables, changes nothing else. It is still a schema change, so
     /// the server only runs it when explicitly told to.
+    ///
+    /// Each migration is retried on its own. That is safe only because they
+    /// are idempotent: one that failed partway leaves objects behind that the
+    /// next attempt's IF NOT EXISTS steps over.
     pub async fn migrate(&self) -> Result<(), RepositoryError> {
         for migration in MIGRATIONS {
-            sqlx::raw_sql(migration)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| RepositoryError::Database(e.to_string()))?;
+            retrying(|| sqlx::raw_sql(migration).execute(&self.pool)).await?;
         }
         Ok(())
     }
@@ -240,21 +242,64 @@ const MAX_ATTEMPTS: u32 = 4;
 /// The read-only case matters behind a read/write splitting pooler such as
 /// pgDog: a write routed to a replica fails with 25006, and the next attempt
 /// may land on the primary.
+///
+/// A pooler also reports its own failures as Postgres errors. pgDog sends every
+/// internal error as 58000 (system_error), so that code is only retried when
+/// the message says the pool could not hand out a connection in time; any other
+/// 58000 is a real fault and retrying would just repeat it.
 fn is_transient(e: &sqlx::Error) -> bool {
     match e {
         sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_) => true,
-        sqlx::Error::Database(dbe) => matches!(
-            dbe.code().as_deref(),
-            Some(
-                "40001"     // serialization_failure
-                | "40P01"   // deadlock_detected
-                | "57014"   // query_canceled - incl. conflict with recovery
-                | "25006"   // read_only_sql_transaction - routed to a replica
-                | "53300"   // too_many_connections
-                | "08000" | "08003" | "08006" | "08001" | "08004" // connection_exception
-            )
-        ),
+        sqlx::Error::Database(dbe) => is_transient_sqlstate(dbe.code().as_deref(), dbe.message()),
         _ => false,
+    }
+}
+
+fn is_transient_sqlstate(code: Option<&str>, message: &str) -> bool {
+    match code {
+        Some(
+            "40001"     // serialization_failure
+            | "40P01"   // deadlock_detected
+            | "57014"   // query_canceled - incl. conflict with recovery
+            | "57P01"   // admin_shutdown
+            | "57P02"   // crash_shutdown
+            | "57P03"   // cannot_connect_now - server still starting up
+            | "55P03"   // lock_not_available
+            | "25006"   // read_only_sql_transaction - routed to a replica
+            | "53300"   // too_many_connections
+            | "08000" | "08001" | "08003" | "08004" | "08006" | "08007", // connection_exception
+        ) => true,
+        Some("58000") => message.contains("checkout timeout"),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use super::is_transient_sqlstate;
+
+    #[test]
+    fn a_pooler_that_ran_out_of_connections_is_worth_another_try() {
+        // What pgDog sent when the database came back from a power cut: its
+        // pool had no connection ready yet, and the server exited on it.
+        assert!(is_transient_sqlstate(Some("58000"), "checkout timeout"));
+        assert!(is_transient_sqlstate(
+            Some("57P03"),
+            "the database system is starting up"
+        ));
+    }
+
+    #[test]
+    fn a_pooler_fault_that_is_not_a_timeout_is_reported() {
+        // pgDog uses 58000 for every internal error, so the code alone would
+        // retry faults that will fail the same way every time.
+        assert!(!is_transient_sqlstate(Some("58000"), "no such database"));
+        assert!(!is_transient_sqlstate(
+            Some("42P01"),
+            "relation does not exist"
+        ));
+        assert!(!is_transient_sqlstate(Some("23505"), "duplicate key value"));
+        assert!(!is_transient_sqlstate(None, "checkout timeout"));
     }
 }
 
