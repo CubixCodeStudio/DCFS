@@ -445,7 +445,8 @@ pub trait MetadataRepository: Send + Sync + 'static {
     // an object that *no* live version references may be deleted.
 
     /// Object ids that no live version references any more, whose dead versions
-    /// are all older than `older_than`.
+    /// are all older than `older_than`; and objects no chunk references at all,
+    /// recorded before `older_than`.
     ///
     /// The caller deletes each one from the object store and then calls
     /// [`MetadataRepository::forget_object`]. Deleting from the store first

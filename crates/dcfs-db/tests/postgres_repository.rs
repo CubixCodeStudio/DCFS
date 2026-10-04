@@ -472,3 +472,63 @@ async fn object_locators_survive_a_restart() {
 
     teardown(pool, schema).await;
 }
+
+#[tokio::test]
+async fn an_object_no_chunk_points_at_is_collected_once_old() {
+    let Some((repo, pool, schema)) = setup().await else {
+        eprintln!("skipped: TEST_DATABASE_URL not set");
+        return;
+    };
+    let record = |object_id| dcfs_db::ObjectLocatorRecord {
+        object_id,
+        backend: "discord".to_string(),
+        message_id: "m".to_string(),
+        attachment_id: "a".to_string(),
+        url: "u".to_string(),
+        size: 8,
+    };
+    let (kept, replaced, fresh) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    for id in [kept, replaced, fresh] {
+        repo.put_object_locator(&record(id)).await.unwrap();
+    }
+
+    // A retried upload re-attaches the part, and the first object loses the
+    // only chunk that pointed at it.
+    let root = repo.get_root().await.unwrap();
+    let file = Uuid::new_v4();
+    repo.create_node(file, root.id, b"f".to_vec(), "file", 0o100644, 0, 0)
+        .await
+        .unwrap();
+    let v1 = repo.create_staging_version(file, None, 8).await.unwrap();
+    repo.attach_chunk(v1.id, 0, 0, 8, "h", replaced)
+        .await
+        .unwrap();
+    repo.attach_chunk(v1.id, 0, 0, 8, "h", kept).await.unwrap();
+    repo.commit_version(
+        CommitGuard {
+            node_id: file,
+            version_id: v1.id,
+            expected_generation: 1,
+            expected_current_version: None,
+        },
+        8,
+        "t",
+    )
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "UPDATE stored_objects SET created_at = now() - interval '2 hours' WHERE id = ANY($1)",
+    )
+    .bind(vec![kept, replaced])
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(1);
+    let doomed = repo.collectable_objects(cutoff, 100).await.unwrap();
+    // Still attached, or too young to tell from an upload still running.
+    assert_eq!(doomed, vec![replaced]);
+
+    teardown(pool, schema).await;
+}

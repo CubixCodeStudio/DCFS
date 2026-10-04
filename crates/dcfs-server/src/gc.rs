@@ -25,6 +25,8 @@ pub struct GcReport {
     pub nodes_purged: u64,
     pub sessions_purged: u64,
     pub sizes_corrected: u64,
+    /// Held by a webhook no longer configured, so left in place.
+    pub objects_kept: u64,
 }
 
 /// How many objects one sweep will delete before yielding, so a large backlog
@@ -64,6 +66,13 @@ pub async fn collect_once(
             // Already gone is the desired end state, so keep going and clean
             // up the metadata that still points at it.
             Ok(()) | Err(ObjectStoreError::NotFound(_)) => {}
+            // Kept objects come back every tick and take a place in the batch.
+            // A handful is harmless; if they ever approach BATCH, filter them
+            // out in the query by their backend column instead.
+            Err(ObjectStoreError::Retained(_)) => {
+                report.objects_kept += 1;
+                continue;
+            }
             Err(e) => {
                 // One unreachable object must not stop the sweep; the next one
                 // will try again.
@@ -120,6 +129,7 @@ pub fn spawn(
                     nodes = report.nodes_purged,
                     sessions = report.sessions_purged,
                     sizes = report.sizes_corrected,
+                    kept = report.objects_kept,
                     "gc swept"
                 ),
                 Err(e) => tracing::warn!("gc failed: {e}"),

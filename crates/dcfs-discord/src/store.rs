@@ -307,6 +307,17 @@ impl ObjectStore for DiscordObjectStore {
 
     async fn delete(&self, locator: &ObjectLocator) -> Result<(), ObjectStoreError> {
         let discord_loc = self.locator_of(locator.id).await?;
+        // A webhook can only delete its own messages. Through the fallback, one
+        // that is no longer configured answers 404, which reads as "already
+        // gone" and would drop the locator while the message stays. Keep both.
+        if !discord_loc.webhook_id.is_empty()
+            && !self
+                .clients
+                .iter()
+                .any(|c| c.webhook_id() == discord_loc.webhook_id)
+        {
+            return Err(ObjectStoreError::Retained(locator.id));
+        }
         match self
             .client_for(&discord_loc)
             .delete_message(&discord_loc.message_id)
@@ -481,6 +492,36 @@ mod tests {
 
         upload_mock.assert_async().await;
         delete_mock.assert_async().await;
+    }
+
+    /// A webhook that has been removed can no longer delete its messages, and
+    /// the fallback's 404 must not pass for "already gone": the message would
+    /// stay while the record of it went.
+    #[tokio::test]
+    async fn delete_keeps_an_object_held_by_a_retired_webhook() {
+        let mut server = Server::new_async().await;
+        let any_delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let locators = Arc::new(MemoryLocatorStore::default());
+        let store =
+            DiscordObjectStore::with_clients(vec![test_client(&server.url())], locators.clone());
+        let id = ObjectId::new();
+        locators
+            .put(
+                &DiscordLocator::new(id, "m".into(), "a".into(), "u".into(), 1)
+                    .from_webhook("retired"),
+            )
+            .await
+            .unwrap();
+
+        let result = store.delete(&ObjectLocator::new(id)).await;
+        assert!(matches!(result, Err(ObjectStoreError::Retained(_))));
+        assert!(locators.get(id).await.unwrap().is_some(), "record kept");
+        any_delete.assert_async().await;
     }
 
     /// Discord's attachment URLs expire. The locator keeps the message and

@@ -181,6 +181,7 @@ impl From<ObjectStoreError> for AppError {
         match err {
             ObjectStoreError::NotFound(_) => Self::not_found("object not found"),
             ObjectStoreError::AlreadyExists(_) => Self::conflict("object already exists"),
+            ObjectStoreError::Retained(_) => Self::internal("backend unavailable"),
             ObjectStoreError::Backend(msg) => {
                 error!(detail = %msg, "object store backend error");
                 Self::internal("backend unavailable")

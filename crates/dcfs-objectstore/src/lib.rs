@@ -20,6 +20,10 @@ pub enum ObjectStoreError {
     AlreadyExists(ObjectId),
     #[error("backend error: {0}")]
     Backend(String),
+    /// The object is held somewhere this store is not configured to reach,
+    /// so it is left as it is rather than reported gone.
+    #[error("object kept, its holder is not configured: {0}")]
+    Retained(ObjectId),
 }
 
 /// A stored object's metadata.

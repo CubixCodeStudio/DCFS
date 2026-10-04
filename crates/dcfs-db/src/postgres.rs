@@ -1145,6 +1145,15 @@ impl MetadataRepository for PgRepository {
                    WHERE other.object_id = c.object_id
                      AND other.version_id IN (SELECT id FROM live)
                )
+             UNION
+             -- An object no chunk points at: its upload was cut off before the
+             -- chunk was attached, or a rewrite of the same part replaced it.
+             -- Nothing reaches it through a version, so only its own age can
+             -- say it is done with; a chunk is attached seconds after upload.
+             SELECT o.id
+             FROM stored_objects o
+             WHERE o.created_at < $1
+               AND NOT EXISTS (SELECT 1 FROM file_chunks c WHERE c.object_id = o.id)
              LIMIT $2",
             )
             .bind(older_than)
