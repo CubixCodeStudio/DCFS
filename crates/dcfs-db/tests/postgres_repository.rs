@@ -532,3 +532,63 @@ async fn an_object_no_chunk_points_at_is_collected_once_old() {
 
     teardown(pool, schema).await;
 }
+
+#[tokio::test]
+async fn a_dead_version_is_purged_even_when_a_newer_one_is_based_on_it() {
+    let Some((repo, pool, schema)) = setup().await else {
+        eprintln!("skipped: TEST_DATABASE_URL not set");
+        return;
+    };
+    let root = repo.get_root().await.unwrap();
+    let file = Uuid::new_v4();
+    repo.create_node(file, root.id, b"f".to_vec(), "file", 0o100644, 0, 0)
+        .await
+        .unwrap();
+
+    // Two commits, the second based on the first, as a long write makes.
+    let v1 = repo.create_staging_version(file, None, 8).await.unwrap();
+    repo.commit_version(
+        CommitGuard {
+            node_id: file,
+            version_id: v1.id,
+            expected_generation: 1,
+            expected_current_version: None,
+        },
+        0,
+        "t1",
+    )
+    .await
+    .unwrap();
+    let v2 = repo
+        .create_staging_version(file, Some(v1.id), 8)
+        .await
+        .unwrap();
+    let generation = repo.get_node(file).await.unwrap().generation;
+    repo.commit_version(
+        CommitGuard {
+            node_id: file,
+            version_id: v2.id,
+            expected_generation: generation,
+            expected_current_version: Some(v1.id),
+        },
+        0,
+        "t2",
+    )
+    .await
+    .unwrap();
+
+    // Only the first has aged out; the second is current and points at it.
+    sqlx::query("UPDATE file_versions SET committed_at = now() - interval '2 hours' WHERE id = $1")
+        .bind(v1.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(1);
+    assert_eq!(repo.purge_empty_dead_versions(cutoff).await.unwrap(), 1);
+    assert!(repo.get_version(v1.id).await.is_err());
+    let kept = repo.get_version(v2.id).await.unwrap();
+    assert_eq!(kept.base_version_id, None);
+
+    teardown(pool, schema).await;
+}

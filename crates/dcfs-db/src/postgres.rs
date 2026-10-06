@@ -1184,14 +1184,27 @@ impl MetadataRepository for PgRepository {
         &self,
         older_than: DateTime<Utc>,
     ) -> Result<u64, RepositoryError> {
+        // A version that is still around may name a doomed one as its base:
+        // a write commits every gigabyte, each commit based on the last, and
+        // the older ones age out first. The base is lineage only — the manifest
+        // was copied when the version was made — so the link is dropped rather
+        // than letting the foreign key fail the whole sweep.
         let done = sqlx::query(
-            "DELETE FROM file_versions v
-             WHERE COALESCE(v.committed_at, v.created_at) < $1
-               AND NOT EXISTS (
-                   SELECT 1 FROM nodes n
-                   WHERE n.current_version_id = v.id AND n.deleted_at IS NULL
-               )
-               AND NOT EXISTS (SELECT 1 FROM file_chunks c WHERE c.version_id = v.id)",
+            "WITH doomed AS (
+                 SELECT v.id FROM file_versions v
+                 WHERE COALESCE(v.committed_at, v.created_at) < $1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM nodes n
+                       WHERE n.current_version_id = v.id AND n.deleted_at IS NULL
+                   )
+                   AND NOT EXISTS (SELECT 1 FROM file_chunks c WHERE c.version_id = v.id)
+             ),
+             unlinked AS (
+                 UPDATE file_versions SET base_version_id = NULL
+                 WHERE base_version_id IN (SELECT id FROM doomed)
+                   AND id NOT IN (SELECT id FROM doomed)
+             )
+             DELETE FROM file_versions WHERE id IN (SELECT id FROM doomed)",
         )
         .bind(older_than)
         .execute(&self.pool)
